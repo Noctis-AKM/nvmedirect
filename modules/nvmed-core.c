@@ -782,6 +782,7 @@ static NVMED_RESULT nvmed_scan_device(void) {
 	char *tempPath;
 	char *sysfsPath;
 
+	/* 尝试load nvme模块 */
 	ret = request_module("nvme");
 
 	if(ret < 0) {
@@ -794,6 +795,7 @@ static NVMED_RESULT nvmed_scan_device(void) {
 		nvmed_submit_cmd = (typeof(nvmed_submit_cmd))(uintptr_t)lookup_ret;
 	}
 	else {
+		/* 在符号表中找到函数nvme_submit_sync_cmd */
 		lookup_ret = kallsyms_lookup_name("nvme_submit_sync_cmd");
 		if(lookup_ret) {
 			nvmed_submit_cmd_mq = (typeof(nvmed_submit_cmd_mq))(uintptr_t)lookup_ret;
@@ -805,6 +807,7 @@ static NVMED_RESULT nvmed_scan_device(void) {
 		return -NVMED_FAULT;
 	}
 
+	/* 查找函数nvme_set_features */
 	lookup_ret = kallsyms_lookup_name("nvme_set_features");
 	if(!lookup_ret) {
 		NVMED_ERR("NVMeDirect: Can not find Symbol [nvme_set_features]\n");
@@ -828,7 +831,9 @@ static NVMED_RESULT nvmed_scan_device(void) {
 	tempPath = kzalloc(sizeof(char) * 1024, GFP_KERNEL);
 	sysfsPath = kzalloc(sizeof(char) * 1024, GFP_KERNEL);
 
+	/* 在sys中找所有的nvme设备 */
 	while ((pdev = pci_get_class(PCI_CLASS_NVME, pdev))) {
+		/* nvme_dev在pdev->dev->driver_data中 */
 		dev = pci_get_drvdata(pdev);
 		if(dev == NULL) continue;
 
@@ -838,6 +843,10 @@ static NVMED_RESULT nvmed_scan_device(void) {
 		memset(sysfsPath, 0x0, 1024);
 
 		kobj = &pdev->dev.kobj;
+		/*
+		 * 根据找到的pcie kobj,推算出整个sysfs的路径,比如:
+		 * /sys/devices/platform/soc/f0a00000.apb/f0a4c000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0
+		 */
 		while(kobj != NULL) {
 			snprintf(tempPath, strlen(sysfsPath) + strlen(kobj->name)+2, "/%s%s", kobj->name, sysfsPath);
 			memcpy(sysfsPath, tempPath, strlen(tempPath)+1);
@@ -848,17 +857,21 @@ static NVMED_RESULT nvmed_scan_device(void) {
 		//////////////
 		
 		dev_entry = kzalloc(sizeof(*dev_entry), GFP_KERNEL);
+		/* 记录nvme_dev */
 		dev_entry->dev = dev;
+		/* 记录pci_dev */
 		dev_entry->pdev = pdev;
 		dev_entry->num_user_queue = 0;
 
 		spin_lock_init(&dev_entry->ctrl_lock);
-		
+
+		/* 一般是cpu个数+1个queue */
 		for(i=0; i<dev->queue_count; i++) {
 			set_bit(i, dev_entry->queue_bmap);
 		}
 
 		// Intr Supports
+		/* 从pci dev获取是否支持msix */
 		if(check_msix(dev_entry)) {
 			dev_entry->msix_entry = NULL;
 			dev_entry->vec_max = dev->max_qid - 1;
@@ -874,6 +887,7 @@ static NVMED_RESULT nvmed_scan_device(void) {
 
 		INIT_LIST_HEAD(&dev_entry->ns_list);
 
+		/* 将当前dev_entry添加到全局链表中 */
 		list_add(&dev_entry->list, &nvmed_dev_list);
 		
 		list_for_each_entry(ns, &DEV_TO_NS_LIST(dev), list) {

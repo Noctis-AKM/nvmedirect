@@ -43,118 +43,38 @@
 #define	DEV_ENTRY_TO_DEVICE(dev_entry) &dev_entry->pdev->dev
 #define NS_ENTRY_TO_DEV(ns_entry) ns_entry->dev_entry->dev
 
-#define DEV_TO_INSTANCE(dev) dev->instance
-#define DEV_TO_HWSECTORS(dev) dev->max_hw_sectors
-#define DEV_TO_STRIPESIZE(dev) dev->stripe_size
-#define DEV_TO_VWC(dev) dev->vwc
+#include "../include/nvme_hdr.h"
 
-#define DEV_TO_ADMINQ(dev) dev->admin_q
-#define DEV_TO_NS_LIST(dev) dev->namespaces
-#if KERNEL_VERSION_CODE >= KERNEL_VERSION(4,4,0)
-	#include "../include/nvme_hdr.h"
-
-	#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,4,0)
-		#define KERN_440
-		#include "nvme.h"
-	#endif
-	#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,5,0)
-		#define KERN_450
-		#include "nvme.h"
-	#endif
-	#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,6,0)
-		#define KERN_460
-		#include "nvme.h"
-	#endif
-	#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,7,0)
-		#define KERN_470
-		#include "nvme.h"
-	#endif
-	#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,8,0)
-		#define KERN_480
-		#include "nvme.h"
-	#endif
-	#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,9,0)
-		#define KERN_490
-		#include "nvme.h"
-	#endif
-	#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,10,0)
-		#define KERN_4100
-		#include "nvme.h"
-	#endif
-	#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,11,0)
-		#define KERN_4110
-		#include "nvme.h"
-	#endif
-
-	#if KERNEL_VERSION_CODE >= KERNEL_VERSION(4,5,0)
-		#undef DEV_TO_ADMINQ
-		#undef DEV_TO_INSTANCE
-		#undef DEV_TO_HWSECTORS
-		#undef DEV_TO_STRIPESIZE
-		#undef DEV_TO_VWC
-		#undef DEV_TO_NS_LIST
-
-		#define DEV_TO_ADMINQ(dev) dev->ctrl.admin_q
-		#define DEV_TO_INSTANCE(dev) dev->ctrl.instance
-		#define DEV_TO_HWSECTORS(dev) dev->ctrl.max_hw_sectors
-		#define DEV_TO_STRIPESIZE(dev) dev->ctrl.stripe_size
-		#define DEV_TO_VWC(dev) dev->ctrl.vwc
-		#define DEV_TO_NS_LIST(dev) dev->ctrl.namespaces
-
-	#endif
-
-	#if KERNEL_VERSION_CODE >= KERNEL_VERSION(4,10,0)
-		#undef DEV_TO_STRIPESIZE
-		#define DEV_TO_STRIPESIZE(dev) (dev->ctrl.max_hw_sectors << 8)
-	#endif
-#else
-	#include <linux/nvme.h>
+#if KERNEL_VERSION_CODE == KERNEL_VERSION(4,9,0)
+	#define KERN_490
+	#include "nvme.h"
 #endif
+
+#define DEV_TO_ADMINQ(dev) dev->ctrl.admin_q
+#define DEV_TO_INSTANCE(dev) dev->ctrl.instance
+#define DEV_TO_HWSECTORS(dev) dev->ctrl.max_hw_sectors
+#define DEV_TO_STRIPESIZE(dev) dev->ctrl.stripe_size
+#define DEV_TO_VWC(dev) dev->ctrl.vwc
+#define DEV_TO_NS_LIST(dev) dev->ctrl.namespaces
 
 #define TRUE	1
 #define FALSE	0
 
 #ifdef NVMED_CORE_HEADERS
 
-//NVME_SET_FEATURES
-#if KERNEL_VERSION_CODE < KERNEL_VERSION(4,5,0)
-	#define NVMED_SET_FEATURES(dev_entry, fid, dword11, dma_addr, result) \
-				nvmed_set_features_fn(dev_entry->dev, fid, dword11, dma_addr, result)
-	#define NVMED_GET_FEATURES(dev_entry, fid, result) \
-				nvmed_get_features_fn(dev_entry->dev, fid, 0, 0, result)
-	int (*nvmed_set_features_fn)(struct nvme_dev *dev, unsigned fid, unsigned dword11,
-		dma_addr_t dma_addr, u32 *result) = NULL;
-	int (*nvmed_get_features_fn)(struct nvme_dev *dev, unsigned fid, unsigned nsid,
-		dma_addr_t dma_addr, u32 *result) = NULL;
-#elif KERNEL_VERSION_CODE < KERNEL_VERSION(4,9,0)
-	#define NVMED_SET_FEATURES(dev_entry, fid, dword11, dma_addr, result) \
-				nvmed_set_features_fn(&dev_entry->dev->ctrl, fid, dword11, dma_addr, result)
-	#define NVMED_GET_FEATURES(dev_entry, fid, result) \
-				nvmed_get_features_fn(&dev_entry->dev->ctrl, fid, 0, 0, result)
-	int (*nvmed_set_features_fn)(struct nvme_ctrl *dev, unsigned fid, unsigned dword11,
-		dma_addr_t dma_addr, u32 *result) = NULL;
-	int (*nvmed_get_features_fn)(struct nvme_ctrl *dev, unsigned fid, unsigned nsid,
-		dma_addr_t dma_addr, u32 *result) = NULL;
-#else
-	#define NVMED_SET_FEATURES(dev_entry, fid, dword11, dma_addr, result) \
-				nvmed_set_features_fn(&dev_entry->dev->ctrl, fid, dword11, NULL, 0, result)
-	#define NVMED_GET_FEATURES(dev_entry, fid, result) \
-				nvmed_get_features_fn(&dev_entry->dev->ctrl, fid, 0, NULL, 0, result)
-	int (*nvmed_set_features_fn)(struct nvme_ctrl *dev, unsigned fid, unsigned dword11,
-		void *buffer, size_t buflen, u32 *result) = NULL;
-	int (*nvmed_get_features_fn)(struct nvme_ctrl *dev, unsigned fid, unsigned nsid,
-		void *buffer, size_t buflen, u32 *result) = NULL;
-#endif
 
-#if KERNEL_VERSION_CODE < KERNEL_VERSION(3,19,0)
-	#undef DEV_TO_ADMINQ
-	#define DEV_TO_ADMINQ(dev) dev
-	int (*nvmed_submit_cmd_mq)(void *x, ...);
-#else
-	int (*nvmed_submit_cmd_mq)(struct request_queue *q, struct nvme_command *cmd,
-		void *buf, unsigned bufflen) = NULL;
+#define NVMED_SET_FEATURES(dev_entry, fid, dword11, dma_addr, result) \
+			nvmed_set_features_fn(&dev_entry->dev->ctrl, fid, dword11, NULL, 0, result)
+#define NVMED_GET_FEATURES(dev_entry, fid, result) \
+			nvmed_get_features_fn(&dev_entry->dev->ctrl, fid, 0, NULL, 0, result)
+int (*nvmed_set_features_fn)(struct nvme_ctrl *dev, unsigned fid, unsigned dword11,
+	void *buffer, size_t buflen, u32 *result) = NULL;
+int (*nvmed_get_features_fn)(struct nvme_ctrl *dev, unsigned fid, unsigned nsid,
+	void *buffer, size_t buflen, u32 *result) = NULL;
 
-#endif
+int (*nvmed_submit_cmd_mq)(struct request_queue *q, struct nvme_command *cmd,
+	void *buf, unsigned bufflen) = NULL;
+
 int (*nvmed_submit_cmd)(struct nvme_dev *, struct nvme_command *, 
 		u32 *result) = NULL;
 
@@ -167,11 +87,7 @@ static LIST_HEAD(nvmed_dev_list);
 
 #endif //NVMED_CORE_HEADERS
 
-#if KERNEL_VERSION_CODE < KERNEL_VERSION(4,9,0)
-	#define NVMED_MSIX_HANDLER_V1
-#else
-	#define NVMED_MSIX_HANDLER_V2
-#endif
+#define NVMED_MSIX_HANDLER_V2
 
 struct async_cmd_info {
 	struct kthread_work work;
