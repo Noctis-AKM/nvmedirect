@@ -2,7 +2,7 @@
 #define _NVMED_NVME_HEADER_H
 
 #include <linux/blk-mq.h>
-
+/* 从内核拷贝而来 */
 #ifdef KERN_490
 enum nvme_ctrl_state {
 	NVME_CTRL_NEW,
@@ -21,6 +21,7 @@ struct nvme_ctrl {
 	struct request_queue *connect_q;
 	struct device *dev;
 	struct kref kref;
+	/* 系统中第几个nvme设备 */
 	int instance;
 	struct blk_mq_tag_set *tagset;
 	struct list_head namespaces;
@@ -72,6 +73,7 @@ struct nvme_ns {
 
 	struct nvme_ctrl *ctrl;
 	struct request_queue *queue;
+	/* 每个ns都可以作为一个disk */
 	struct gendisk *disk;
 	struct nvm_dev *ndev;
 	struct kref kref;
@@ -97,6 +99,7 @@ struct nvme_ns {
 /*
  * Represents an NVM Express device.  Each nvme_dev is a PCI function.
  */
+/*  */
 struct nvme_dev {
 	struct nvme_queue **queues;
 	struct blk_mq_tag_set tagset;

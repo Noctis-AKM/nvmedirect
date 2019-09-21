@@ -40,7 +40,9 @@
 #define KERNEL_VERSION_CODE	KERNEL_VERSION(KERNEL_VERSION_MAJOR, \
 										KERNEL_VERSION_MINOR, 0)
 
+/* nvme dev entry向上找到pci_dev最终找到设备驱动模型的dev */
 #define	DEV_ENTRY_TO_DEVICE(dev_entry) &dev_entry->pdev->dev
+/* ns entry向上找到nvmed device entry最终找到nvme dev */
 #define NS_ENTRY_TO_DEV(ns_entry) ns_entry->dev_entry->dev
 
 #include "../include/nvme_hdr.h"
@@ -98,7 +100,9 @@ struct async_cmd_info {
 	void *ctx;
 };
 
+/* 几乎和内核的pci.c中定义的struct nvme_queue完全一致 */
 struct nvme_queue {
+	/* 通用设备驱动模型的dev,指向pci func */
 	struct device *q_dmadev;
 	struct nvme_dev *dev;
 	spinlock_t q_lock;
@@ -107,6 +111,7 @@ struct nvme_queue {
 	volatile struct nvme_completion *cqes;
 	dma_addr_t sq_dma_addr;
 	dma_addr_t cq_dma_addr;
+	/* db的地址 */
 	u32 __iomem *q_db;
 	u16 q_depth;
 	u16 sq_head;
@@ -122,6 +127,7 @@ typedef struct nvmed_user_quota_entry {
 	unsigned int queue_max;
 	unsigned int queue_used;
 
+	/* 链表成员,链表头是nvmed_ns_entry->list */
 	struct list_head list;
 } NVMED_USER_QUOTA_ENTRY;
 
@@ -134,16 +140,20 @@ struct nvme_irq_desc {
 	void *queue;
 };
 
+/* nvmed设备entry,记录nvme设备/pci设备以及中断 */
 typedef struct nvmed_dev_entry {
 	struct nvme_dev *dev;
 	struct pci_dev *pdev;
 
 	spinlock_t ctrl_lock;
 
+	/* 用户调用ioctl创建的queue pair */
 	unsigned int num_user_queue;
+	/* 一个nvmed entry最多65536个queue */
 	DECLARE_BITMAP(queue_bmap, 65536);
 
 	struct list_head list;
+	/* 链表头,用于连接所有ns */
 	struct list_head ns_list;
 	
 	// Intr Support
@@ -152,9 +162,11 @@ typedef struct nvmed_dev_entry {
 	unsigned long *vec_bmap;
 	unsigned int vec_bmap_max;
 	struct nvme_irq_desc *desc;
+	/* kernel中pci.h有定义 */
 	struct msix_entry *msix_entry;
 } NVMED_DEV_ENTRY;
 
+/* 记录sys下的entry以及nvme ns */
 typedef struct nvmed_ns_entry {
 	NVMED_DEV_ENTRY *dev_entry;
 
@@ -164,9 +176,11 @@ typedef struct nvmed_ns_entry {
 	struct proc_dir_entry *proc_admin;
 	struct proc_dir_entry *proc_sysfs_link;
 
+	/* 用于连接到nvmed entry */
 	struct list_head list;
 
 	struct list_head queue_list;
+	/* 链表头,链表成员是nvmed_user_quota_entry->list */
 	struct list_head user_list;
 	
 	int partno;

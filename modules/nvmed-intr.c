@@ -34,19 +34,24 @@ int nvmed_irq_comm(NVMED_NS_ENTRY *ns_entry, unsigned long __user *__qid) {
 
 	copy_from_user(&qid, __qid, sizeof(unsigned long));
 
+	/* 清空设备上所有queue的中断计数清0 */
 	if(qid == 0) {
 		nr_queue = dev->queue_count + dev_entry->num_user_queue;
+		/* 一个unsigned long表示一个bmap */
 		nr_bmap = QUEUE_BMAP_IDX(nr_queue);
 		if(QUEUE_BMAP_OFF(nr_queue) == 0) nr_bmap++;
 
 		qbmap = kzalloc(sizeof(unsigned long) * nr_bmap, GFP_KERNEL);
 		while(1) {
+			/* 遍历一个ns上所有的queue */
 			list_for_each_entry_safe(queue, queue_next, &ns_entry->queue_list, list) {
+				/* 没有注册中断,跳过这个queue */
 				if(queue->irq_vector == 0) continue;
 				qid = queue->nvmeq->qid;
 
 				ret = atomic_read(&queue->nr_intr);
 				if(ret > 0) {
+					/* 记录这个被清除中断计数的queue */
 					qbmap[QUEUE_BMAP_IDX(qid)] |= 1<<QUEUE_BMAP_OFF(qid);
 					atomic_set(&queue->nr_intr, 0);
 					hasCQ = true;
@@ -55,12 +60,15 @@ int nvmed_irq_comm(NVMED_NS_ENTRY *ns_entry, unsigned long __user *__qid) {
 			if(dev_entry->num_user_queue == 0)
 				hasCQ = true;
 
+			/* 一旦过中断就要返回 */
 			if(hasCQ == true)
 				break;
-			else 
+			else
+				/* 没有清除过中断,就schedule */
 				schedule();
 		}
 
+		/* 将中断清除的queue返回给用户 */
 		copy_to_user(__qid, qbmap, sizeof(unsigned long) * nr_bmap);
 		kfree(qbmap);
 
@@ -69,9 +77,11 @@ int nvmed_irq_comm(NVMED_NS_ENTRY *ns_entry, unsigned long __user *__qid) {
 	}
 	else {
 		while(1) {
+			/* 清除特定qid的中断计数 */
 			queue = nvmed_get_queue_from_qid(ns_entry, qid);
 
 			if(queue == NULL) return -EINVAL;
+			/* 指定的queue没有注册中断,返回EINVAL */
 			if(queue->irq_vector == 0) return -EINVAL;
 
 			ret = atomic_read(&queue->nr_intr);
@@ -93,6 +103,7 @@ static irqreturn_t nvmed_irq_handler(int irq, void *data) {
 
 	irqreturn_t result;
 
+	/* 递增一个queue上的中断计数 */
 	atomic_inc(&queue->nr_intr);
 
 	result = IRQ_HANDLED;
@@ -126,15 +137,18 @@ NVMED_RESULT nvmed_reinitialize_msix(NVMED_DEV_ENTRY *dev_entry,
 #ifdef NVMED_MSIX_HANDLER_V1
 	entry = kzalloc(sizeof(struct msix_entry) * nr_vecs, GFP_KERNEL);
 
+	/* 设置msix entry的no */
 	for(i=0; i<nr_vecs; i++) {
 		entry[i].entry = i;
 	}
 
 #endif
 
+	/* 遍历pci中设备驱动模型的dev关联的所有msi_desc */
 	for_each_msi_entry(msi_desc, &pdev->dev) {
 		irq_desc = irq_to_desc(msi_desc->irq);
 		action = irq_desc->action;
+		/* 处理共享中断 */
 		while(action) {
 			desc = &desc_arr[irq_idx];
 			desc->handler = action->handler;
@@ -154,6 +168,7 @@ NVMED_RESULT nvmed_reinitialize_msix(NVMED_DEV_ENTRY *dev_entry,
 			free_irq(action->irq, action->dev_id);
 
 			action = action->next;
+			/* 每个共享中断也要单独统计,之后执行中断申请 */
 			irq_idx++;
 		}
 	}
@@ -194,6 +209,7 @@ NVMED_RESULT nvmed_register_intr_handler(NVMED_DEV_ENTRY *dev_entry,
 	NVMED_RESULT result;
 	int ret;
 	//Need disable & re_enable msix range?
+	/* 是否需要重新分配msix */
 	if(irq_vector > dev_entry->vec_max) {
 		result = nvmed_reinitialize_msix(dev_entry, irq_vector + 1);
 		if(!result)
@@ -206,6 +222,7 @@ NVMED_RESULT nvmed_register_intr_handler(NVMED_DEV_ENTRY *dev_entry,
 	sprintf(queue->irq_name, "nvmed%dq%d", DEV_TO_INSTANCE(dev_entry->dev), queue->nvmeq->qid);
 
 	//Set new IRQ Handler
+	/* 申请中断,中断号就是pci记录的irq */
 	ret = request_irq(vector_to_irq(dev_entry, dev_entry->pdev, irq_vector),
 			nvmed_irq_handler, IRQF_SHARED,
 			queue->irq_name, queue);

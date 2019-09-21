@@ -54,6 +54,7 @@ static int nvmed_get_features(NVMED_DEV_ENTRY *dev_entry, unsigned fid, u32 *res
 	return NVMED_GET_FEATURES(dev_entry, fid, result);
 }
 
+/* 实际调用nvme_set_features */
 static int nvmed_set_features(NVMED_DEV_ENTRY *dev_entry, unsigned fid, unsigned dword11,
 					dma_addr_t dma_addr, u32 *result)
 {
@@ -76,10 +77,12 @@ static int get_queue_count(NVMED_DEV_ENTRY *dev_entry)
 	return min(result & 0xffff, result >> 16) + 1;
 }
 
+/* 和内核nvme_set_queue_count实现方式一致 */
 static int set_queue_count(NVMED_DEV_ENTRY *dev_entry, int count, int *err)
 {
 	int status;
 	u32 result = 0;
+	/* nvme spec p128,低16bit表示sq的个数,高16bit表示cq的个数.不包含admin queue */
 	u32 q_count = (count - 1) | ((count - 1) << 16);
 
 	status = nvmed_set_features(dev_entry, NVME_FEAT_NUM_QUEUES, q_count, 0,
@@ -90,15 +93,18 @@ static int set_queue_count(NVMED_DEV_ENTRY *dev_entry, int count, int *err)
 		*err = status;
 		return 0;
 	}
+	/* 返回设置成功的queue的个数 */
 	return min(result & 0xffff, result >> 16) + 1;
 }
 
 static struct nvme_queue *nvmed_alloc_queue(NVMED_DEV_ENTRY *dev_entry, int qid, int depth) {
 	struct nvme_dev *dev = dev_entry->dev;
+	/* 分配一个nvme_queue */
 	struct nvme_queue *nvmeq = kzalloc(sizeof(*nvmeq), GFP_KERNEL);
 	
 	if(!nvmeq) return NULL;
 
+	/* 根据depth分配cqes和sq_cmds */
 	nvmeq->cqes = dma_zalloc_coherent(DEV_ENTRY_TO_DEVICE(dev_entry), CQ_SIZE(depth),
 							&nvmeq->cq_dma_addr, GFP_KERNEL);
 	if(!nvmeq->cqes)
@@ -142,8 +148,10 @@ static int adapter_alloc_cq(NVMED_DEV_ENTRY *dev_entry, u16 qid,
 	 * Note: we (ab)use the fact the the prp fields survive if no data
 	 * is attached to the request.
 	 */
+	/* 创建cq */
 	memset(&c, 0, sizeof(c));
 	c.create_cq.opcode = nvme_admin_create_cq;
+	/* nvmeq->cq_dma_addr有depth个nvme_completion */
 	c.create_cq.prp1 = cpu_to_le64(nvmeq->cq_dma_addr);
 	c.create_cq.cqid = cpu_to_le16(qid);
 	c.create_cq.qsize = cpu_to_le16(nvmeq->q_depth - 1);
@@ -158,6 +166,10 @@ static int adapter_alloc_sq(NVMED_DEV_ENTRY *dev_entry, u16 qid,
 {
 	struct nvme_dev *dev = dev_entry->dev;
 	struct nvme_command c;
+	/*
+	 * NVME_QUEUE_PHYS_CONTIG表示sq所在的内存是物理连续的.如果物理不连续,那么prp1表示一个list point.
+	 * NVME_SQ_PRIO_MEDIUM表示中等优先级.
+	 */
 	int flags = NVME_QUEUE_PHYS_CONTIG | NVME_SQ_PRIO_MEDIUM;
 
 	/*
@@ -176,15 +188,19 @@ static int adapter_alloc_sq(NVMED_DEV_ENTRY *dev_entry, u16 qid,
 }
 
 static int nvmed_create_queue(NVMED_QUEUE_ENTRY *queue_entry, int qid, int irq_vector) {
+	/* 通过queue_entry找到dev_entry */
 	NVMED_DEV_ENTRY *dev_entry = queue_entry->ns_entry->dev_entry;
+	/* 找到nvme_dev,也就是一个pci function */
 	struct nvme_dev *dev = queue_entry->nvmeq->dev;
 	struct nvme_queue *nvmeq = queue_entry->nvmeq;
 	int result;
 
+	/* 分配cq */
 	result = adapter_alloc_cq(dev_entry, qid, nvmeq, irq_vector);
 	if(result < 0)
 		return result;
 
+	/* 分配sq */
 	result = adapter_alloc_sq(dev_entry, qid, nvmeq);
 	if(result < 0)
 		return result;
@@ -233,12 +249,15 @@ static NVMED_USER_QUOTA_ENTRY* nvmed_get_user_quota(NVMED_NS_ENTRY *ns_entry, ku
 static int nvmed_get_device_info(NVMED_NS_ENTRY *ns_entry, 
 								NVMED_DEVICE_INFO __user *u_dev_info) {
 	struct nvme_ns *ns = ns_entry->ns;
+	/* 通过ns entry找到nvme dev */
 	struct nvme_dev *dev = NS_ENTRY_TO_DEV(ns_entry);
 	struct nvmed_device_info dev_info;
-	
+
+	/* 当前用户需要获取quota */
 	if(nvmed_get_user_quota(ns_entry, current_uid()) < 0)
 		return -EPERM;
 
+	/* 一个ns就代表一个磁盘 */
 	dev_info.instance = DEV_TO_INSTANCE(dev);
 	dev_info.ns_id = ns->ns_id;
 	dev_info.capacity = ns->disk->part0.nr_sects << (ns->lba_shift);
@@ -284,17 +303,20 @@ static int nvmed_set_user_quota(NVMED_NS_ENTRY *ns_entry, kuid_t uid, unsigned _
 	NVMED_USER_QUOTA_ENTRY *quota;
 
 	if(current_cred()->uid.val != 0) return -EPERM;
-	
+
+	/* 根据uid在ns中找到对应的quota */
 	quota = nvmed_get_user_quota(ns_entry, uid);
 
 	if(quota == NULL) {
 		quota = kzalloc(sizeof(*quota), GFP_KERNEL);
 		quota->uid = uid;
+		/* 设置quota最大值 */
 		quota->queue_max = __quota;
 		list_add(&quota->list, &ns_entry->user_list);
 	}
 	else {
 		quota->queue_max = __quota;
+		/* 当传递的__quota == 0时,取消uid的quota */
 		if(__quota == 0 && quota->queue_used == 0) {
 			list_del(&quota->list);
 			kfree(quota);
@@ -342,6 +364,7 @@ static int nvmed_get_buffer_addr(NVMED_NS_ENTRY *ns_entry, NVMED_BUF* __user *__
 
 	copy_from_user(&u_buf, __buf, sizeof(u_buf));
 
+	/* 虚拟地址 */
 	start_addr = (unsigned long)u_buf.addr;
 
 	pfnList = kzalloc(sizeof(u64) * u_buf.size, GFP_KERNEL);
@@ -349,6 +372,7 @@ static int nvmed_get_buffer_addr(NVMED_NS_ENTRY *ns_entry, NVMED_BUF* __user *__
 	mm = task->mm;
 	down_read(&mm->mmap_sem);
 	for(i=0; i<u_buf.size; i++) {
+		/* 从start_addr开始每一个page长度，记录一个物理地址 */
 		vaddr = start_addr + (PAGE_SIZE * i);
 		
 		pgd = pgd_offset(mm, vaddr);
@@ -367,6 +391,7 @@ static int nvmed_get_buffer_addr(NVMED_NS_ENTRY *ns_entry, NVMED_BUF* __user *__
 		if(!pmd_none(*pmd) && 
 				(pmd_val(*pmd) & (_PAGE_PRESENT|_PAGE_PSE)) != _PAGE_PRESENT) {
 			pte = *(pte_t *)pmd;
+			/* 记录物理地址 */
 			pfnList[i] = (pte_pfn(pte) << PAGE_SHIFT) + (vaddr & ~PMD_MASK);
 			continue;
 		}
@@ -480,6 +505,7 @@ static int nvmed_queue_create(NVMED_NS_ENTRY *ns_entry,
 	int qid;
 	int err;
 	int result;
+	/* 用户态可以创建中断是能的queue */
 	bool reqInterrupt = FALSE;
 	unsigned int irq_vector = 0;
 
@@ -491,14 +517,17 @@ static int nvmed_queue_create(NVMED_NS_ENTRY *ns_entry,
 	}
 
 	//check quota
+	/* 检查当前用户的quota剩余值 */
 	if(!nvmed_get_remain_user_quota(ns_entry, current_uid())) {
 		spin_unlock(&dev_entry->ctrl_lock);
 		return -NVMED_OVERQUOTA;
 	}
 
+	/* queue的总数 */
 	queue_count = dev->queue_count + dev_entry->num_user_queue;
 	//db_bar_size check
 	size = (queue_count+1) * 8 * dev->db_stride;
+	/* bar空间不能超过4k */
 	if(size > 4096) {
 		spin_unlock(&dev_entry->ctrl_lock);
 		return -NVMED_EXCEEDLIMIT;
@@ -510,10 +539,13 @@ static int nvmed_queue_create(NVMED_NS_ENTRY *ns_entry,
 		spin_unlock(&dev_entry->ctrl_lock);
 		return -NVMED_EXCEEDLIMIT;
 	}
+	/* err == 6表示Internal Error，见nvme spec p 65 */
 	else if(result == 0 && err == 6) {
+		/* 重新获取queue count */
 		result = get_queue_count(dev_entry);
 	}
 
+	/* 请求的queue个数超过限制 */
 	if(result < queue_count) {
 		NVMED_ERR("NVMeDirect: Number of queues exceed limit\n");
 		spin_unlock(&dev_entry->ctrl_lock);
@@ -522,11 +554,14 @@ static int nvmed_queue_create(NVMED_NS_ENTRY *ns_entry,
 
 	//user_queue_entry create
 	queue = kzalloc(sizeof(*queue), GFP_KERNEL);
+	/* 指向所属的ns entry */
 	queue->ns_entry = ns_entry;
+	/* 找到一个空闲的queue bit */
 	qid = find_first_zero_bit(dev_entry->queue_bmap, 256);
 	set_bit(qid, dev_entry->queue_bmap);
 
 	//queue alloc
+	/* 分配一个queue的数据结构和内存,并没有调用命令创建queue */
 	queue->nvmeq = nvmed_alloc_queue(dev_entry, qid, dev->q_depth);
 	if(!queue->nvmeq) {
 		result = -NVMED_FAULT;
@@ -535,11 +570,13 @@ static int nvmed_queue_create(NVMED_NS_ENTRY *ns_entry,
 
 	//get Vector Nr
 	if(reqInterrupt) {
+		/* 中断bit */
 		irq_vector = find_first_zero_bit(dev_entry->vec_bmap, 
 				dev_entry->vec_bmap_max);
 		set_bit(irq_vector, dev_entry->vec_bmap);
 	}
 
+	/* 调用命令创建sq和cq */
 	result = nvmed_create_queue(queue, qid, irq_vector);
 	if(result) {
 		goto result_error_create_queue;
@@ -570,6 +607,7 @@ static int nvmed_queue_create(NVMED_NS_ENTRY *ns_entry,
 	nvmed_set_user_used_quota(ns_entry, current_uid(), TRUE);
 
 	dev_entry->num_user_queue++;
+	/* 将queue结构加入到ns的链表中 */
 	list_add(&queue->list, &ns_entry->queue_list);
 
 	spin_unlock(&dev_entry->ctrl_lock);
@@ -628,8 +666,10 @@ static int nvmed_queue_delete_kern(NVMED_NS_ENTRY *ns_entry, unsigned int qid) {
 	}
 
 	//disable queue
+	/* 发送命令删除queue */
 	nvmed_disable_queue(dev_entry, queue);
 	//free queue
+	/* 释放内存 */
 	dma_free_coherent(queue->nvmeq->q_dmadev, CQ_SIZE(queue->nvmeq->q_depth),
 			(void *)queue->nvmeq->cqes, queue->nvmeq->cq_dma_addr);
 	dma_free_coherent(queue->nvmeq->q_dmadev, SQ_SIZE(queue->nvmeq->q_depth),
@@ -679,10 +719,12 @@ static int nvmed_get_user(NVMED_NS_ENTRY *ns_entry, NVMED_USER_QUOTA __user *__q
 	copy_from_user(&quota, __quota, sizeof(*__quota));
 	
 	uid.val = quota.uid;
+	/* 找到uid对应的quota entry */
 	quota_entry = nvmed_get_user_quota(ns_entry, uid);
 	if(quota_entry == NULL)
 		return -NVMED_FAULT;
 
+	/* 将queue个数quota返回给用户 */
 	quota.queue_max = quota_entry->queue_max;
 	quota.queue_used = quota_entry->queue_used;
 
@@ -702,7 +744,8 @@ static int nvmed_set_user(NVMED_NS_ENTRY *ns_entry, NVMED_USER_QUOTA __user *__q
 	uid.val = quota.uid;
 
 	nvmed_set_user_quota(ns_entry, uid, quota.queue_max);
-	
+
+	/* queue_max == 0表示要取消quota */
 	if(quota.queue_max == 0) {
 		quota.queue_max = 0;
 		quota.queue_used = 0;
@@ -713,6 +756,7 @@ static int nvmed_set_user(NVMED_NS_ENTRY *ns_entry, NVMED_USER_QUOTA __user *__q
 		if(quota_entry == NULL)  {
 			return -NVMED_FAULT;
 		}
+		/* 设置完quota之后再获取一次设置好的quota,返回给用户设置成功的quota值 */
 		quota.queue_max = quota_entry->queue_max;
 		quota.queue_used = quota_entry->queue_used;
 	}
@@ -725,6 +769,7 @@ static int nvmed_set_user(NVMED_NS_ENTRY *ns_entry, NVMED_USER_QUOTA __user *__q
  * IOCTL FUNCTION of /proc/NVMeDirect/nvmeXnY/admin
  */
 static long nvmed_admin_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
+	/* 通过vfs inode获取proc inode的data, proc inode记录ns_entry */
 	NVMED_NS_ENTRY *ns_entry = PDE_DATA(file->f_inode);
 
 	switch (cmd) {
@@ -822,6 +867,7 @@ static NVMED_RESULT nvmed_scan_device(void) {
 	}
 	nvmed_get_features_fn = (typeof(nvmed_get_features_fn))(uintptr_t)lookup_ret;
 
+	/* 建立/proc/nvmed */
 	NVMED_PROC_ROOT = proc_mkdir("nvmed", NULL);
 	if(!NVMED_PROC_ROOT) {
 		NVMED_ERR("NVMeDirect: Fail to create proc entry\n");
@@ -855,7 +901,8 @@ static NVMED_RESULT nvmed_scan_device(void) {
 		snprintf(tempPath, strlen(sysfsPath) + 5, "/%s%s", "sys", sysfsPath);
 		memcpy(sysfsPath, tempPath, strlen(tempPath)+1);
 		//////////////
-		
+
+		/* 每一个nvme设备都有一个nvmed_device_entry */
 		dev_entry = kzalloc(sizeof(*dev_entry), GFP_KERNEL);
 		/* 记录nvme_dev */
 		dev_entry->dev = dev;
@@ -889,9 +936,15 @@ static NVMED_RESULT nvmed_scan_device(void) {
 
 		/* 将当前dev_entry添加到全局链表中 */
 		list_add(&dev_entry->list, &nvmed_dev_list);
-		
+
+		/*
+		 * 遍历nvme dev上所有的namespace,比如/dev/nvme0n1,/dev/nvme0n2.
+		 * 所有的ns都连接到dev->ctrl.namespaces.
+		 */
 		list_for_each_entry(ns, &DEV_TO_NS_LIST(dev), list) {
+			/* 初始化分区遍历器piter,include partition 0 */
 			disk_part_iter_init(&piter, ns->disk, DISK_PITER_INCL_PART0);
+			/* 遍历分区,每个分区都有一个ns entry */
 			while ((part = disk_part_iter_next(&piter))) {
 				if(part != &ns->disk->part0 && !part->info) continue;
 
@@ -908,6 +961,7 @@ static NVMED_RESULT nvmed_scan_device(void) {
 				else
 					sprintf(dev_name, "nvme%dn%up%u", DEV_TO_INSTANCE(dev), ns->ns_id, part->partno);
 
+				/* 建立/proc/nvmed/nvme0n1,/proc/nvmed/nvme0n1p1等等 */
 				ns_entry->ns_proc_root = proc_mkdir(dev_name, NVMED_PROC_ROOT);
 				if(!ns_entry->ns_proc_root) {
 					NVMED_ERR("NVMeDirect: Error creating proc directory - %s\n", dev_name);
@@ -915,6 +969,7 @@ static NVMED_RESULT nvmed_scan_device(void) {
 					continue;
 				}
 
+				/* 建立/proc/nvmed/nvme0n1等设备节点下建立admin节点.通过ioctl控制admin节点 */
 				ns_entry->proc_admin = proc_create_data("admin", S_IRUSR|S_IRGRP|S_IROTH,
 						ns_entry->ns_proc_root, &nvmed_ns_fops, ns_entry);
 
@@ -924,7 +979,8 @@ static NVMED_RESULT nvmed_scan_device(void) {
 					kfree(ns_entry);
 					continue;
 				}
-				
+
+				/* 建立/proc/nvmed/nvme0n1等设备节点下建立sys节点,指向原本的sysfs下的nvme设备 */
 				ns_entry->proc_sysfs_link = proc_symlink("sysfs", ns_entry->ns_proc_root, sysfsPath);
 				if(!ns_entry->proc_sysfs_link) {
 					NVMED_ERR("NVMeDirect: Error creating symlink - %s sysfs -> %s\n", dev_name, sysfsPath);
@@ -933,8 +989,10 @@ static NVMED_RESULT nvmed_scan_device(void) {
 				INIT_LIST_HEAD(&ns_entry->queue_list);
 				INIT_LIST_HEAD(&ns_entry->user_list);
 
+				/* 将ns entry加到nvmed device下 */
 				list_add(&ns_entry->list, &dev_entry->ns_list);
 
+				/* 对于当前分区,给当前用户设置100的quota值 */
 				nvmed_set_user_quota(ns_entry, current_uid(), 100);
 			}
 			disk_part_iter_exit(&piter);

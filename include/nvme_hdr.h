@@ -21,7 +21,7 @@
 
 #ifndef _NVME_HDR_H
 #define _NVME_HDR_H
-
+/* 从内核的nvme.h拷贝过来的 */
 #include <linux/types.h>
 
 /* I/O commands */
@@ -130,6 +130,7 @@ struct nvme_completion {
 	__le16	status;		/* did the command fail, and if so, why? */
 };
 
+/* 从内核的nvme.h拷贝过来的 */
 struct nvme_command {
 	union {
 		struct nvme_common_command common;
@@ -173,6 +174,7 @@ enum nvme_admin_opcode {
 	nvme_admin_security_recv	= 0x82,
 };
 
+/* linux/include/nvme.h有同样的宏定义 */
 enum {
 	NVME_QUEUE_PHYS_CONTIG	= (1 << 0),
 	NVME_CQ_IRQ_ENABLED	= (1 << 1),

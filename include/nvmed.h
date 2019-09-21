@@ -56,11 +56,14 @@ typedef enum {
 
 typedef struct nvmed_buf {
 	void* addr;
+	/* 有多少个page */
 	unsigned int size;
+	/* 以addr开始,每一个page的长度记录一次物理地址 */
 	u64* pfnList;
 } NVMED_BUF;
 
 typedef struct nvmed_device_info {
+	/* 系统中第几个nvme设备 */
 	int instance;
 	int lba_shift;
 	unsigned int ns_id;
