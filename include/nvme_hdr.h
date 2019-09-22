@@ -79,7 +79,9 @@ struct nvme_create_cq {
 	__u64			rsvd8;
 	__le16			cqid;
 	__le16			qsize;
+	/* dword 11 */
 	__le16			cq_flags;
+	/* msix table中的msix entry下标 */
 	__le16			irq_vector;
 	__u32			rsvd12[4];
 };
@@ -91,8 +93,10 @@ struct nvme_create_sq {
 	__u32			rsvd1[5];
 	__le64			prp1;
 	__u64			rsvd8;
+	/* dword 10*/
 	__le16			sqid;
 	__le16			qsize;
+	/* dword 11 */
 	__le16			sq_flags;
 	__le16			cqid;
 	__u32			rsvd12[4];

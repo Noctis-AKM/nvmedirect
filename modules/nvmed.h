@@ -132,6 +132,7 @@ typedef struct nvmed_user_quota_entry {
 } NVMED_USER_QUOTA_ENTRY;
 
 struct nvme_irq_desc {
+	/* cq使用的msix entry的index */
 	int cq_vector;
 	irq_handler_t handler;
 	irq_handler_t thread_fn;
@@ -162,7 +163,7 @@ typedef struct nvmed_dev_entry {
 	unsigned long *vec_bmap;
 	unsigned int vec_bmap_max;
 	struct nvme_irq_desc *desc;
-	/* kernel中pci.h有定义 */
+	/* kernel中pci.h有定义.msix_entry数组 */
 	struct msix_entry *msix_entry;
 } NVMED_DEV_ENTRY;
 

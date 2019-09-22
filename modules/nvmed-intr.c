@@ -14,6 +14,7 @@
 		list_for_each_entry((desc), dev_to_msi_list((pdev)), list)
 #endif
 
+/* 将msix的index转换成irq no */
 #ifdef NVMED_MSIX_HANDLER_V1
 	#define vector_to_irq(dev_entry, pdev, irq_vector) dev_entry->msix_entry[irq_vector].vector
 #else
@@ -131,10 +132,12 @@ NVMED_RESULT nvmed_reinitialize_msix(NVMED_DEV_ENTRY *dev_entry,
 	int ret;
 
 	if(!check_msix(dev_entry)) return -NVMED_FAULT;
-	
+
+	/* nr_vecs个nvme_irq_desc */
 	desc_arr = kzalloc(sizeof(struct nvme_irq_desc) * nr_vecs, 
 			GFP_KERNEL);
 #ifdef NVMED_MSIX_HANDLER_V1
+	/* 重新分配nr_vecs个msix entry */
 	entry = kzalloc(sizeof(struct msix_entry) * nr_vecs, GFP_KERNEL);
 
 	/* 设置msix entry的no */
@@ -146,6 +149,7 @@ NVMED_RESULT nvmed_reinitialize_msix(NVMED_DEV_ENTRY *dev_entry,
 
 	/* 遍历pci中设备驱动模型的dev关联的所有msi_desc */
 	for_each_msi_entry(msi_desc, &pdev->dev) {
+		/* 根据irq no在radix tree中获取irq_desc */
 		irq_desc = irq_to_desc(msi_desc->irq);
 		action = irq_desc->action;
 		/* 处理共享中断 */
@@ -157,11 +161,13 @@ NVMED_RESULT nvmed_reinitialize_msix(NVMED_DEV_ENTRY *dev_entry,
 			desc->queue = action->dev_id;
 			desc->irqName = action->name;
 
+			/* 从中断名中获取dev_id和q_id */
 			if(action->name[4] == 'd')
 				sscanf(desc->irqName, "nvmed%dq%d", &dev_id, &q_id);
 			else
 				sscanf(desc->irqName, "nvme%dq%d", &dev_id, &q_id);
 
+			/* misx entry的no */
 			desc->cq_vector = (q_id-1 < 0)? 0:(q_id-1);
 
 			irq_set_affinity_hint(action->irq, NULL);
@@ -176,6 +182,7 @@ NVMED_RESULT nvmed_reinitialize_msix(NVMED_DEV_ENTRY *dev_entry,
 	pci_disable_msix(pdev);
 
 #ifdef NVMED_MSIX_HANDLER_V1
+	/* 返回设置成功的entry个数 */
 	vecs = pci_enable_msix_range(pdev, entry, 1, nr_vecs);
 
 	if(dev_entry->msix_entry != NULL)
@@ -186,8 +193,13 @@ NVMED_RESULT nvmed_reinitialize_msix(NVMED_DEV_ENTRY *dev_entry,
 	vecs = pci_enable_msix_range(pdev, NULL, 1, nr_vecs);
 #endif
 	if(vecs > 0)
+	/* 已有的misx中断全部重新注册中断 */
 	for (i=0; i<irq_idx; i++) {
 		desc = &desc_arr[i];
+		/*
+		 * 如果desc->thread_fn == NULL,那么就无法中断线程化.只能使用普通中断.这里使用
+		 * request_threaded_irq是为了不改变之前的中断方式.
+		 */
 		ret = request_threaded_irq(vector_to_irq(dev_entry, pdev, desc->cq_vector),
 					desc->handler, desc->thread_fn, IRQF_SHARED,
 					desc->irqName, desc->queue);
@@ -211,6 +223,7 @@ NVMED_RESULT nvmed_register_intr_handler(NVMED_DEV_ENTRY *dev_entry,
 	//Need disable & re_enable msix range?
 	/* 是否需要重新分配msix */
 	if(irq_vector > dev_entry->vec_max) {
+		/* irq_vector是0开始的.重新申请irq_vector + 1个msix entry */
 		result = nvmed_reinitialize_msix(dev_entry, irq_vector + 1);
 		if(!result)
 			dev_entry->vec_max = irq_vector;

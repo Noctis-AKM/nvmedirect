@@ -263,6 +263,7 @@ static int nvmed_get_device_info(NVMED_NS_ENTRY *ns_entry,
 	dev_info.capacity = ns->disk->part0.nr_sects << (ns->lba_shift);
 	dev_info.q_depth = dev->q_depth;
 	dev_info.lba_shift = ns->lba_shift;
+	/* nvme ssd一次性可以处理的512字节的sectors个数 */
 	dev_info.max_hw_sectors = DEV_TO_HWSECTORS(dev);
 	dev_info.stripe_size = DEV_TO_STRIPESIZE(dev);
 	dev_info.db_stride = dev->db_stride;
@@ -570,13 +571,16 @@ static int nvmed_queue_create(NVMED_NS_ENTRY *ns_entry,
 
 	//get Vector Nr
 	if(reqInterrupt) {
-		/* 中断bit */
+		/*
+		 * 在nvmed_scan_device的时候,就已经为每个kernel queue设置了bit.
+		 * 这里需要给用户创建的queue也置位.
+		 */
 		irq_vector = find_first_zero_bit(dev_entry->vec_bmap, 
 				dev_entry->vec_bmap_max);
 		set_bit(irq_vector, dev_entry->vec_bmap);
 	}
 
-	/* 调用命令创建sq和cq */
+	/* 调用命令创建sq和cq.irq_vector是vec_bitmap中的一个下标 */
 	result = nvmed_create_queue(queue, qid, irq_vector);
 	if(result) {
 		goto result_error_create_queue;
@@ -921,11 +925,14 @@ static NVMED_RESULT nvmed_scan_device(void) {
 		/* 从pci dev获取是否支持msix */
 		if(check_msix(dev_entry)) {
 			dev_entry->msix_entry = NULL;
+			/* 一个queue一个中断 */
 			dev_entry->vec_max = dev->max_qid - 1;
 			dev_entry->vec_kernel = dev->max_qid;
+			/* 设备支持最大的中断数量 */
 			dev_entry->vec_bmap_max = pci_msix_vec_count(pdev);
 			dev_entry->vec_bmap = kzalloc(sizeof(unsigned long) * \
 					BITS_TO_LONGS(dev_entry->vec_bmap_max), GFP_KERNEL);
+			/* 置位每一个queue使用的bit */
 			for(i=0; i<dev->max_qid; i++) {
 				set_bit(i, dev_entry->vec_bmap);
 			}

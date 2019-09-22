@@ -82,6 +82,7 @@ typedef struct nvmed_device_info {
 
 typedef struct nvmed_create_queue_args {
 	u32 qid;
+	/* 申请queue的时候使用中断 */
 	int reqInterrupt;
 } NVMED_CREATE_QUEUE_ARGS;
 

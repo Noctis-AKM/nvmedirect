@@ -91,7 +91,9 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 
 	req_size = size - nvmed->num_cache_size;
 	slot = malloc(sizeof(NVMED_CACHE_SLOT));
+	/* 分配req_size个NVME_CACHE */
 	slot->cache_info = calloc(req_size, sizeof(NVMED_CACHE));
+	/* 给cache分配req_size个PAGE */
 	slot->cache_ptr = mmap(NULL, PAGE_SIZE * req_size, PROT_READ | PROT_WRITE, 
 			MAP_ANONYMOUS | MAP_LOCKED | MAP_SHARED, -1, 0);
 	if(slot->cache_ptr == NULL) {
@@ -100,6 +102,7 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 		return -1;
 	}
 	slot->size = req_size;
+	/* 将slot插入nvmed的链表 */
 	LIST_INSERT_HEAD(&nvmed->slot_head, slot, slot_list);
 	
 	/* Initialize memory and translate virt to phys addr */
@@ -754,11 +757,14 @@ int get_path_from_blkdev(char* blkdev, char** admin_path) {
 	char temp_path[16];
 	char *proc_path;
 	int path_len;
-	
+
+	/* 跳过/dev/nvme */
 	strcpy(temp_path, blkdev+9);
+	/* /proc/nvmed/nvme%s/admin中固定部分的长度 */
 	path_len = 23;
 	path_len+= strlen(temp_path);
 
+	/* admin完整路径 */
 	proc_path = malloc(sizeof(char) * path_len);
 	sprintf(proc_path, "/proc/nvmed/nvme%s/admin", temp_path);
 
@@ -797,6 +803,7 @@ NVMED* nvmed_open(char* path, int flags) {
 	}
 
 	//IOCTL - Get Device Info
+	/* 1.获取nvme的device info */
 	dev_info = calloc(1, sizeof(*dev_info));
 	ret = ioctl(fd, NVMED_IOCTL_NVMED_INFO, dev_info);
 	if(ret<0) {
@@ -805,6 +812,7 @@ NVMED* nvmed_open(char* path, int flags) {
 		return NULL;
 	}
 
+	/* 如果硬件一次性可以处理超过2MB的io.也会设置最大单个io大小2MB */
 	if(dev_info->max_hw_sectors > 4096) dev_info->max_hw_sectors = 4096;
 
 	nvmed = calloc(1, sizeof(*nvmed));
@@ -839,6 +847,7 @@ NVMED* nvmed_open(char* path, int flags) {
 
 	if(!__FLAG_ISSET(flags, NVMED_NO_CACHE)) {
 		// CACHE
+		/* 如果使用了cache.最少使用4MB作为cache */
 		if((nvmed->dev_info->max_hw_sectors * 512) / PAGE_SIZE > NVMED_CACHE_INIT_NUM_PAGES)
 			num_cache = (nvmed->dev_info->max_hw_sectors * 512) / PAGE_SIZE;
 		else

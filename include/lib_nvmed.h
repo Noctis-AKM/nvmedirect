@@ -38,6 +38,7 @@ extern "C" {
 #define NVMED_BUF_MAGIC	0x4E564DED		//NVM'ED'
 #define NVMED_NUM_PREALLOC_PRP	64
 #define NVMED_CACHE_FORCE_EVICT_MAX	4
+/* 4MB个page */
 #define NVMED_CACHE_INIT_NUM_PAGES	(256*1024*16)	// 256 -> 1MB
 
 #define COMPILER_BARRIER() asm volatile("" ::: "memory")
@@ -169,7 +170,9 @@ enum {
 typedef struct nvmed_device_info NVMED_DEVICE_INFO;
 
 typedef struct nvmed {
+	/* proc下admin节点的路径 */
 	char*	ns_path;
+	/* proc下admin节点的路径fd */
 	int 	ns_fd;
 	u32 	flags;
 	
@@ -177,6 +180,7 @@ typedef struct nvmed {
 	
 	pthread_spinlock_t 	mngt_lock;
 
+	/* queue的个数 */
 	int numQueue;
 	LIST_HEAD(queue_list, nvmed_queue) queue_head;
 
