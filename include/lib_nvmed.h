@@ -225,6 +225,7 @@ typedef struct nvmed_queue {
 	u32 *cq_db;
 
 	u16 sq_head, sq_tail, cq_head;
+	/* cq_phase需要和nvme completion的p bit相同(p bit是controller设置的) */
 	u8	cq_phase, cqe_seen;
 
 	struct nvmed_iod* iod_arr;
@@ -264,8 +265,11 @@ typedef struct nvmed_handle {
 	void** prpBuf;
 	u64* pa_prpBuf;
 	int prpBuf_size;
+	/* prp的可用page */
 	int prpBuf_curr;
+	/* 指向已经获取的page */
 	int prpBuf_head;
+	/* 指向下一个要释放page的位置 */
 	int prpBuf_tail;
 
 	unsigned int dispatched_io;
@@ -294,6 +298,7 @@ typedef struct nvmed_aio_ctx {
 	
 	void* private_data;
 	void* cb_userdata;
+	/* 当一个io执行完成后执行 */
 	void (*aio_callback)(const struct nvmed_aio_ctx *context, void *userdata);
 } NVMED_AIO_CTX;
 

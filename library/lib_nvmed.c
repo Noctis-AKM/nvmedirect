@@ -170,10 +170,13 @@ int nvmed_handle_put_prp(NVMED_HANDLE* nvmed_handle, void* buf, u64 pa) {
 	int tail;
 	pthread_spin_lock(&nvmed_handle->prpBuf_lock);
 	tail = nvmed_handle->prpBuf_tail;
+	/* prp buf指向buf头部 */
 	nvmed_handle->prpBuf[tail] = buf;
 	nvmed_handle->pa_prpBuf[tail] = pa;
+	/* tail递增 */
 	if(++tail == nvmed_handle->prpBuf_size) tail = 0;
 	nvmed_handle->prpBuf_tail = tail;
+	/* prp可用page增加 */
 	nvmed_handle->prpBuf_curr++;
 	pthread_spin_unlock(&nvmed_handle->prpBuf_lock);
 
@@ -194,6 +197,7 @@ void nvmed_complete_iod(NVMED_IOD* iod) {
 	nvmed_handle = iod->nvmed_handle;
 	//nvmed_queue = HtoQ(nvmed_handle);
 	nvmed = HtoD(nvmed_handle);
+	/* 跟新iod的prp */
 	if(iod->prp_addr != NULL)
 		nvmed_handle_put_prp(nvmed_handle, iod->prp_addr, iod->prp_pa);
 
@@ -223,6 +227,7 @@ void nvmed_complete_iod(NVMED_IOD* iod) {
 			pthread_spin_lock(&nvmed->cache_list_lock);
 			
 			pthread_spin_lock(&nvmed_handle->dirty_list_lock);
+			/* 取消cache的locked和writeback标志 */
 			FLAG_UNSET_SYNC(cache, CACHE_LOCKED);
 			FLAG_UNSET_SYNC(cache, CACHE_WRITEBACK);
 
@@ -239,9 +244,11 @@ void nvmed_complete_iod(NVMED_IOD* iod) {
 
 			pthread_spin_unlock(&nvmed->cache_list_lock);
 		}
+		/* 处理完cache,就可以释放它 */
 		free(iod->cache);
 		//pthread_spin_unlock(&nvmed_queue->iod_arr_lock);
 	}
+	/* 派发的io数量-1 */
 	__sync_fetch_and_sub(&nvmed_handle->dispatched_io, 1);
 	iod->status = IO_COMPLETE;
 }
@@ -265,11 +272,14 @@ int nvmed_queue_complete(NVMED_QUEUE* nvmed_queue) {
 	phase = nvmed_queue->cq_phase;
 	for(;;) {
 		cqe = (volatile struct nvme_completion *)&nvmed_queue->cqes[head];
+		/* phase bit不一样,说明cq已经空了 */
 		if((cqe->status & 1) != nvmed_queue->cq_phase)
 			break;
 
+		/* 返回头部 */
 		if(++head == nvmed->dev_info->q_depth) {
 			head = 0;
+			/* phase翻转 */
 			phase = !phase;
 		}
 		
@@ -377,6 +387,7 @@ NVMED_HANDLE* nvmed_handle_create(NVMED_QUEUE* nvmed_queue, int flags) {
 
 	memset(tempPtr, 0, PAGE_SIZE * nvmed_handle->prpBuf_size);
 
+	/* 虚拟地址转换成物理地址 */
 	virt_to_phys(nvmed_queue->nvmed, tempPtr, nvmed_handle->pa_prpBuf, 
 			PAGE_SIZE * nvmed_handle->prpBuf_size);
 
@@ -384,6 +395,7 @@ NVMED_HANDLE* nvmed_handle_create(NVMED_QUEUE* nvmed_queue, int flags) {
 		nvmed_handle->prpBuf[i] = tempPtr + (PAGE_SIZE*i);
 	}
 
+	/* prpBuf_curr初始化可以使用全部的prp buffer */
 	nvmed_handle->prpBuf_curr = nvmed_handle->prpBuf_size;
 	nvmed_handle->prpBuf_head = 0;
 	nvmed_handle->prpBuf_tail = 0;
@@ -556,9 +568,11 @@ void* nvmed_process_cq_intr(void *data) {
 	int ret;
 
 	while(1) {
+		/* 通过ioctl检查内核中对应queue的中断计数 */
 		ret = ioctl(nvmed->ns_fd, NVMED_IOCTL_INTERRUPT_COMM, &qid);
 		if(ret < 0) break;
 
+		/* 发现收到中断 */
 		if(qid != 0) {
 			nvmed_queue_complete(nvmed_queue);
 		}
@@ -608,6 +622,7 @@ NVMED_QUEUE* nvmed_queue_create(NVMED* nvmed, int flags) {
 	}
 
 	/* Map SQ */
+	/* 在用户态获取sq/cq/db的地址 */
 	sprintf(pathBuf, "%s/sq", pathBase);
 	nvmed_queue->sq_fd = open(pathBuf, O_RDWR);
 	nvmed_queue->sq_cmds = mmap(0, SQ_SIZE(nvmed->dev_info->q_depth), 
@@ -624,12 +639,15 @@ NVMED_QUEUE* nvmed_queue_create(NVMED* nvmed, int flags) {
 	nvmed_queue->db_fd = open(pathBuf, O_RDWR);
 	nvmed_queue->dbs = mmap(0, PAGE_SIZE*2, PROT_READ | PROT_WRITE, MAP_SHARED, nvmed_queue->db_fd, 0);
 
+	/* db寄存器在BAR空间的4k位置 */
 	q_dbs = nvmed_queue->dbs + PAGE_SIZE;
+	/* 每一个qid都有一个cq和sq */
 	nvmed_queue->sq_db = &q_dbs[nvmed_queue->qid * 2 * nvmed->dev_info->db_stride];
 	nvmed_queue->cq_db = &q_dbs[(nvmed_queue->qid * 2 * nvmed->dev_info->db_stride) + nvmed->dev_info->db_stride];
 	nvmed_queue->sq_head = 0;
 	nvmed_queue->sq_tail = 0;
 	nvmed_queue->cq_head = 0;
+	/* phase初始化为1,因为controller在第一轮写cq phase是1. */
 	nvmed_queue->cq_phase = 1;
 
 	nvmed_queue->iod_arr = calloc(nvmed->dev_info->q_depth, sizeof(NVMED_IOD));
@@ -645,6 +663,7 @@ NVMED_QUEUE* nvmed_queue_create(NVMED* nvmed, int flags) {
 
 	nvmed_queue->numHandle = 0;
 	
+	/* 用一个单独的线程去处理内核中断 */
 	if(__FLAG_ISSET(flags, QUEUE_INTERRUPT)) {
 		pthread_create(&nvmed_queue->process_cq_intr, NULL, &nvmed_process_cq_intr, (void*)nvmed_queue);
 	}
@@ -1064,6 +1083,7 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 
 	COMPILER_BARRIER();
 	*(volatile u32 *)nvmed_queue->sq_db = nvmed_queue->sq_tail;
+	/* gcc内置的原子操作函数,给dispatched_io加1,返回之前的dispatched_io */
 	__sync_fetch_and_add(&nvmed_handle->dispatched_io, 1);
 	//nvmed_handle->dispatched_io++;
 

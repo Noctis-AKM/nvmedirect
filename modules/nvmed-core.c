@@ -441,6 +441,7 @@ static int nvmed_queue_db_proc_mmap(struct file *filp, struct vm_area_struct *vm
 	pdev = to_pci_dev(DEV_ENTRY_TO_DEVICE(dev_entry));
 	
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	/* 映射整个BAR0 & BAR1,db在4k的位置 */
 	ret = io_remap_pfn_range(vma, vma->vm_start, pci_resource_start(pdev,0) >> PAGE_SHIFT,
 			4096*2, vma->vm_page_prot);
 
@@ -471,6 +472,7 @@ static int nvmed_queue_cq_proc_mmap(struct file *filp, struct vm_area_struct *vm
 	nvmeq = queue_entry->nvmeq;
 	dmadev = nvmeq->q_dmadev;
 
+	/* 物理地址放到nvmeq->cq_dma_addr,虚拟地址放到nvmeq->cqes */
 	ret = dma_common_mmap(dmadev, vma, 
 			(void *)nvmeq->cqes, nvmeq->cq_dma_addr, CQ_SIZE(nvmeq->q_depth));
 
