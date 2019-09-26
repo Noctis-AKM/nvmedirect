@@ -96,6 +96,7 @@ enum {
 //FLAGS For NVMED_HANDLE
 enum {
 	HANDLE_DIRECT_IO		= 1 << 0,
+	/* 不能在io_head上积攒cache entry批量写入 */
 	HANDLE_SYNC_IO			= 1 << 1,
 
 	HANDLE_HINT_DMEM 		= 1 << 2,
@@ -184,7 +185,8 @@ typedef struct nvmed {
 	int numQueue;
 	LIST_HEAD(queue_list, nvmed_queue) queue_head;
 
-	unsigned int num_cache_size;	
+	unsigned int num_cache_size;
+	/* cache entry的个数 */
 	unsigned int num_cache_usage;
 
 	//LRU TAILQ Order :
@@ -273,8 +275,9 @@ typedef struct nvmed_handle {
 	int prpBuf_tail;
 
 	unsigned int dispatched_io;
-
+	/* 正在执行io的队列 */
 	TAILQ_HEAD(io_list, nvmed_cache) io_head;
+	/* io_head上entry的数量 */
 	int num_io_head;
 	pthread_spinlock_t io_head_lock;
 
@@ -303,6 +306,7 @@ typedef struct nvmed_aio_ctx {
 } NVMED_AIO_CTX;
 
 typedef struct nvmed_cache {
+	/* 4k的block index */
 	unsigned int lpaddr;
 	volatile u32 flags;
 	u32 ref;
@@ -312,7 +316,9 @@ typedef struct nvmed_cache {
 
 	NVMED_HANDLE* handle;
 
+	/* 用于加入lru */
 	TAILQ_ENTRY(nvmed_cache) cache_list;
+	/* 用于加入temp list */
 	TAILQ_ENTRY(nvmed_cache) io_list;
 	LIST_ENTRY(nvmed_cache) handle_cache_list;
 } NVMED_CACHE;

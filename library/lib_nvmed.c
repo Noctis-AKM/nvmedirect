@@ -1108,6 +1108,7 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 	return len;
 }
 
+/* 将handle上io_head的cache全部写入,释放cache */
 unsigned int __evict_handle_dirty_page(NVMED_HANDLE* handle) {
 	unsigned long io_start_lba;
 	unsigned int io_len;
@@ -1117,9 +1118,11 @@ unsigned int __evict_handle_dirty_page(NVMED_HANDLE* handle) {
 	io_len-= io_start_lba;
 	io_len+= 1;
 
+	/* 将cache全部写入设备 */
 	nvmed_cache_io_rw(handle, nvme_cmd_write, \
 			handle->io_head.tqh_first, \
 			io_start_lba * PAGE_SIZE, io_len * PAGE_SIZE, handle->flags | HANDLE_SYNC_IO);
+	/* 清空io_head上的cache */
 	while (handle->io_head.tqh_first != NULL)
 		TAILQ_REMOVE(&handle->io_head, handle->io_head.tqh_first, io_list);
 
@@ -1479,6 +1482,7 @@ NVMED_BOOL nvmed_rw_verify_area(NVMED_HANDLE* nvmed_handle,
 	unsigned long nr_sects = dev_info->nr_sects << dev_info->lba_shift;
 	unsigned long start_lba = nvmed->dev_info->start_sect + __start_lba;
 
+	/* lba溢出 */
 	if(start_lba < dev_info->start_sect)
 		return NVMED_FALSE;
 
@@ -1700,21 +1704,25 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 
 	if(find_blocks == 0) {
 		//read all
+		/* cache完全没有命中 */
 		for(i=0; i<io_blocks; i++) {
+			/* 从handle中获取cache */
 			cache = nvmed_get_cache(nvmed_handle);
 			TAILQ_INSERT_TAIL(&temp_head, cache, io_list);
 		}
+		/* 读取设备,填充temp_head */
 		nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first, 
 				start_block * PAGE_SIZE, io_blocks * PAGE_SIZE, HANDLE_SYNC_IO);
 
 		cache_idx = 0;
 		while(temp_head.tqh_first != NULL) {
+			/* 从temp_head中获取cache,这个cache中包含了从设备中获取的数据 */
 			cache = temp_head.tqh_first;
 
 			TAILQ_REMOVE(&temp_head, cache, io_list);
-			
+			/* cache的lpaddr指向需要读取的block */
 			cache->lpaddr = start_block + cache_idx;
-
+			/* 设置cache entry标志 */
 			FLAG_SET_SYNC(cache, CACHE_LRU | CACHE_UPTODATE);
 
 			if(cache_idx==0) {
@@ -1738,16 +1746,19 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 				memcpy(buf + buf_offs, cache->ptr, buf_copy_size);
 				buf_offs+= PAGE_SIZE;
 			}
-			
+			/* 原子操作,cache的ref-- */
 			DEC_SYNC(cache->ref);
 
 			pthread_rwlock_wrlock(&nvmed->cache_radix_lock);
 			pthread_spin_lock(&nvmed->cache_list_lock);
+			/* cache插入lru尾部 */
 			TAILQ_INSERT_TAIL(&nvmed->lru_head, cache, cache_list);
+			/* cache加入radix tree */
 			radix_tree_insert(&nvmed->cache_root, cache->lpaddr, cache);
 			pthread_spin_unlock(&nvmed->cache_list_lock);
 			pthread_rwlock_unlock(&nvmed->cache_radix_lock);
 
+			/* 没有人使用了这个cache,设置ref == 0 */
 			INIT_SYNC(cache->ref);
 			nvmed->num_cache_usage++;
 			cache_idx++;
@@ -1756,6 +1767,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	else {
 		//find empty block
 		if(find_blocks != io_blocks) {
+		/* 部分命中,需要建立新的cache并且填充 */
 			//Find Hole?
 
 			cacheTarget = malloc(sizeof(NVMED_CACHE*) * io_blocks);
@@ -1765,10 +1777,12 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 
 			i=0;
 			for(block_idx = start_block; block_idx <= end_block; block_idx++) {
+				/* cacheP中保存命中的cache */
 				cache = *(cacheP + i);
 				if(cache != NULL && cache->lpaddr == block_idx) {
-
+					/* 处理这个命中的cache */
 					if(io_nums != 0) {
+						/* 中间有io_nums个cache是新的,需要填充 */
 						nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first, 
 							io_start * PAGE_SIZE, io_nums * PAGE_SIZE, HANDLE_SYNC_IO);
 						
@@ -1777,6 +1791,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 
 						while(temp_head.tqh_first != NULL) {
 							__cache = temp_head.tqh_first;
+							/* 从temp_head取下来,之后就不需要调用nvmed_cache_io_rw填充了 */
 							TAILQ_REMOVE(&temp_head, __cache, io_list);
 							TAILQ_INSERT_TAIL(&nvmed->lru_head, __cache, cache_list);
 							radix_tree_insert(&nvmed->cache_root, __cache->lpaddr, __cache);
@@ -1800,11 +1815,13 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 					pthread_spin_unlock(&nvmed->cache_list_lock);
 				}
 				else {
-
+					/* cacheP中这个cache并不是对应这个block的,那么就从handle中分配一个cache entry */
 					cache = nvmed_get_cache(nvmed_handle);
 					cache->lpaddr = block_idx;
 					TAILQ_INSERT_TAIL(&temp_head, cache, io_list);
+					/* 从handle中分配了cache entry的统计计数 */
 					io_nums++;
+					/* 第一个没有命中的cache的物理地址. 通过nvmed_cache_io_rw进行填充 */
 					if(io_nums == 1) io_start = cache->lpaddr;
 
 					nvmed->num_cache_usage++;
@@ -1812,13 +1829,14 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 					cacheTarget[block_idx-start_block] = cache;
 				}
 			}
-
+			/* cacheTarget保存了全段的cache */
 			for(i=0; i<io_blocks; i++)
 				*(cacheP + i) = cacheTarget[i];
 
 			free(cacheTarget);
 		}
 
+		/* 有部分cache是新分配的,需要从设备获取数据填充 */
 		if(io_nums != 0) {
 			nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first, 
 					io_start * PAGE_SIZE, io_nums * PAGE_SIZE, HANDLE_SYNC_IO);
@@ -1838,6 +1856,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			pthread_rwlock_unlock(&nvmed->cache_radix_lock);
 		}
 
+		/* cache已经完全建立,那么就将cache中的数据拷贝到buf */
 		for(cache_idx=0; cache_idx<io_blocks; cache_idx++) {
 			cache = *(cacheP + cache_idx);
 
@@ -1876,6 +1895,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	return total_read;
 }
 
+/* pio表示是否是pwrite调用进来的 */
 ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf, 
 		unsigned long start_lba, unsigned int len, NVMED_BOOL pio, void* private) {
 	NVMED *nvmed = HtoD(nvmed_handle);
@@ -1891,18 +1911,25 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	if(!nvmed_rw_verify_area(nvmed_handle, start_lba, len))
 		return -1;
 
+	/* 以page size为block size */
 	start_block = start_lba / PAGE_SIZE;
 	end_block = (start_lba + len - 1) / PAGE_SIZE;
 	io_blocks = end_block - start_block + 1;
 
+	/* 分配io_blocks个cache */
 	cacheP = calloc(io_blocks, sizeof(NVMED_CACHE*));
 
 	pthread_rwlock_rdlock(&nvmed->cache_radix_lock);
+	/*
+	 * 查找start_block开始的io_blocks个block的cache. 找到的cache数量放在find_blocks中.
+	 * 找到的cache放到数组cacheP中
+	 */
 	find_blocks = radix_tree_gang_lookup(&nvmed->cache_root, 
 			(void **)cacheP, start_block, io_blocks);
 	pthread_rwlock_unlock(&nvmed->cache_radix_lock);
 	
 	TAILQ_INIT(&temp_head);
+	/* 检查cacheP数组中的cache,统计有多少cache在[start_blocks,end_block]范围内 */
 	if(find_blocks > 0) {
 		cache = *(cacheP + 0);
 		if(cache->lpaddr > end_block)
@@ -1919,14 +1946,17 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	}
 
 	//find all in cache?
+	/* cache全部命中 */
 	if(find_blocks == io_blocks) {
 		for(cache_idx=0; cache_idx<find_blocks; cache_idx++) {
 			cache = *(cacheP + cache_idx);
 
+			/* 等待cache释放lock */
 			while(FLAG_ISSET_SYNC(cache, CACHE_LOCKED)) {
 				usleep(1);
 			}
 
+			/* 第一个和最后一个cache entry有非对齐的情况 */
 			if(cache_idx==0) {
 				cache_offs = start_lba % PAGE_SIZE;
 				if(cache_offs + len <= PAGE_SIZE) {
@@ -1935,7 +1965,9 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 				else {
 					buf_copy_size = PAGE_SIZE - cache_offs;
 				}
+				/* 将buf中未对齐的部分拷贝到cache */
 				memcpy(cache->ptr + cache_offs, buf, buf_copy_size);
+				/* 跳过已经拷贝的部分 */
 				buf_offs = buf_copy_size;
 			}
 			else if(cache_idx == io_blocks -1) {
@@ -1945,17 +1977,21 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			else {
 				buf_copy_size = PAGE_SIZE;
 				memcpy(cache->ptr, buf + buf_offs, buf_copy_size);
+				/* buf_offs记录拷贝的位置 */
 				buf_offs+= PAGE_SIZE;
 			}
 
 			pthread_spin_lock(&nvmed->cache_list_lock);
+			/* 将cache插入lru尾部 */
 			TAILQ_REMOVE(&nvmed->lru_head, cache, cache_list);
 			TAILQ_INSERT_TAIL(&nvmed->lru_head, cache, cache_list);
 
+			/* 如果cache没有设置CACHE_WRITEBACK,那么就将cache加入temp_head */
 			if(!FLAG_ISSET(cache, CACHE_WRITEBACK))
 				TAILQ_INSERT_TAIL(&temp_head, cache, io_list);
 
 			pthread_spin_lock(&nvmed_handle->dirty_list_lock);
+			/* cache dirty了 */
 			if(!FLAG_ISSET_SYNC(cache, CACHE_DIRTY)) {
 				FLAG_SET_SYNC(cache, CACHE_DIRTY);
 				LIST_INSERT_HEAD(&nvmed_handle->dirty_list, cache, handle_cache_list);
@@ -1968,6 +2004,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	else {
 		// partial write block ?
 		// fill
+		/* cache部分命中 */
 		cache_idx=0;
 		for(block_idx = start_block; block_idx <= end_block; block_idx++) {
 			cache = *(cacheP + cache_idx);
@@ -1977,11 +2014,13 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 				TAILQ_REMOVE(&nvmed->lru_head, cache, cache_list);
 			}
 			else {
+				/* cache miss,从handle中获取一个cache entry */
 				cache = nvmed_get_cache(nvmed_handle);
 				cache->lpaddr = block_idx;
 				nvmed->num_cache_usage++;
 			}
-			
+
+			/* 其他地方使用了cache,等待lock释放 */
 			if(found_from_cache)
 				while(FLAG_ISSET_SYNC(cache, CACHE_LOCKED)) usleep(1);
 			
@@ -1993,7 +2032,8 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 				else {
 					buf_copy_size = PAGE_SIZE - cache_offs;
 				}
-				
+
+				/* 如果这个cache未命中,那么就需要先读取设备,填充cache entry */
 				if(!found_from_cache && buf_copy_size != PAGE_SIZE) {
 					nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, cache, \
 						cache->lpaddr * PAGE_SIZE, PAGE_SIZE, HANDLE_SYNC_IO);
@@ -2012,6 +2052,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 				memcpy(cache->ptr, buf, buf_copy_size);
 			}
 			else {
+				/* 全部覆盖写的情况下,即便cache未命中,也不需要从设备读取数据填充cache */
 				buf_copy_size = PAGE_SIZE;
 				memcpy(cache->ptr, buf, buf_copy_size);
 				buf_offs+= PAGE_SIZE;
@@ -2019,15 +2060,18 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			
 			if(!found_from_cache) {
 				pthread_rwlock_wrlock(&nvmed->cache_radix_lock);
+				/* 新建的cache,根据block index加入radix tree */
 				radix_tree_insert(&nvmed->cache_root, cache->lpaddr, cache);
 				pthread_rwlock_unlock(&nvmed->cache_radix_lock);
 			}
 			else {
+				/* 取数组cacheP下一个cache entry */
 				cache_idx++;
 			}
 		
 			pthread_spin_lock(&nvmed->cache_list_lock);
 
+			/* 将cache entry插入lru尾部 */
 			TAILQ_INSERT_TAIL(&nvmed->lru_head, cache, cache_list);
 
 			pthread_spin_lock(&nvmed_handle->dirty_list_lock);
@@ -2038,7 +2082,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			pthread_spin_unlock(&nvmed_handle->dirty_list_lock);
 
 			pthread_spin_unlock(&nvmed->cache_list_lock);
-			
+			/* 加入temp_head */
 			TAILQ_INSERT_TAIL(&temp_head, cache, io_list);
 		}
 	}
@@ -2050,13 +2094,16 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	}
 
 	// IO MERGE AND EXEC
+	/* handle没有设置HANDLE_SYNC_IO的时候才能进行cache io */
 	if(!FLAG_ISSET(nvmed_handle, HANDLE_SYNC_IO)) {
 		pthread_spin_lock(&nvmed_handle->io_head_lock);
+		/* 加入temp_head的cache要开始执行io */
 		while(temp_head.tqh_first != NULL) {
 			cache = temp_head.tqh_first;
 			cache->handle = nvmed_handle;
 			//if io_head empty?
 			if(TAILQ_EMPTY(&nvmed_handle->io_head)) {
+				/* io_head链表上原本就是空的 */
 				FLAG_SET(cache, CACHE_WRITEBACK);
 				TAILQ_REMOVE(&temp_head, cache, io_list);
 				TAILQ_INSERT_HEAD(&nvmed_handle->io_head, cache, io_list);
@@ -2065,24 +2112,29 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			//back merge?
 			else if(TAILQ_LAST(&nvmed_handle->io_head, io_list)->lpaddr + 1
 					== cache->lpaddr) {
+				/* io_head尾部的cache和当前从temp_head上取下来的cache物理地址连续 */
 				FLAG_SET(cache, CACHE_WRITEBACK);
 				TAILQ_REMOVE(&temp_head, cache, io_list);
+				/* 将cache加入io_head的尾部 */
 				TAILQ_INSERT_TAIL(&nvmed_handle->io_head, cache, io_list);
 				nvmed_handle->num_io_head++;
 			}
 			//front merge?
 			else if(TAILQ_FIRST(&nvmed_handle->io_head)->lpaddr - 1
 					== cache->lpaddr) {
+				/* cache和io_head第一个cache上物理连续 */
 				FLAG_SET(cache, CACHE_WRITEBACK);
 				TAILQ_REMOVE(&temp_head, cache, io_list);
 				TAILQ_INSERT_HEAD(&nvmed_handle->io_head, cache, io_list);
 				nvmed_handle->num_io_head++;
 			}
 			else {
+				/* cache无法加入io_head,就需要将io_head上所有cache写入设备 */
 				__evict_handle_dirty_page(nvmed_handle);
 			}
 		}
 
+		/* cache entry个数不能超过18.也就是说达到512KB就需要写入一次 */
 		if(nvmed_handle->num_io_head == 128) {
 			__evict_handle_dirty_page(nvmed_handle);
 		}
@@ -2090,12 +2142,15 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		pthread_spin_unlock(&nvmed_handle->io_head_lock);
 	}
 	else {
+		/* handle设置了HANDLE_SYNC_IO,无法使用积攒cache,必须要直接写入 */
 		nvmed_cache_io_rw(nvmed_handle, nvme_cmd_write, temp_head.tqh_first, \
 			start_block * PAGE_SIZE, io_blocks * PAGE_SIZE, nvmed_handle->flags);
 	}
 
+	/* 返回写入的长度 */
 	total_write = len;
 
+	/* 如果是通过nvme_write调用进来的 */
 	if(!pio)
 		nvmed_handle->offset += total_write;
 
