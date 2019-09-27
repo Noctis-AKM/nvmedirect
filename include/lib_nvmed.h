@@ -192,6 +192,7 @@ typedef struct nvmed {
 	//LRU TAILQ Order :
 	//	[HEAD] LRu ------------- MRu [TAIL]
 	TAILQ_HEAD(cache_list, nvmed_cache) lru_head, free_head;
+	/* 保存slot.每一个slot获取一段内存分给cache entry */
 	LIST_HEAD(slot_list, nvmed_cache_slot) slot_head;
 	pthread_rwlock_t cache_radix_lock;
 	pthread_spinlock_t cache_list_lock;
@@ -310,7 +311,7 @@ typedef struct nvmed_cache {
 	unsigned int lpaddr;
 	volatile u32 flags;
 	u32 ref;
-	
+	/* ptr的物理地址 */
 	u64 paddr;
 	void* ptr;
 

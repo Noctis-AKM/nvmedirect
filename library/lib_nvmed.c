@@ -82,6 +82,7 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 
 	if(size == 0) return -NVMED_FAULT;
 	if(size == nvmed->num_cache_size) return 0;
+	/* cache不支持shrink */
 	if(size < nvmed->num_cache_size) {
 		nvmed_printf("%s: Cache shrinking is not supported\n", nvmed->ns_path);
 		return -NVMED_FAULT;
@@ -89,11 +90,12 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 	
 	pthread_spin_lock(&nvmed->mngt_lock);
 
+	/* 额外请求的page个数. */
 	req_size = size - nvmed->num_cache_size;
 	slot = malloc(sizeof(NVMED_CACHE_SLOT));
 	/* 分配req_size个NVME_CACHE */
 	slot->cache_info = calloc(req_size, sizeof(NVMED_CACHE));
-	/* 给cache分配req_size个PAGE */
+	/* 给cache分配req_size个PAGE,使用MAP_LOCKED,提前fault */
 	slot->cache_ptr = mmap(NULL, PAGE_SIZE * req_size, PROT_READ | PROT_WRITE, 
 			MAP_ANONYMOUS | MAP_LOCKED | MAP_SHARED, -1, 0);
 	if(slot->cache_ptr == NULL) {
@@ -108,29 +110,34 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 	/* Initialize memory and translate virt to phys addr */
 	if(!lazy_init) {
 		paList = calloc(1, sizeof(u64) * req_size);
+		/* 获取cache_ptr的物理地址,保存在paList中 */
 		virt_to_phys(nvmed, slot->cache_ptr, paList, PAGE_SIZE * req_size);
 	}
 
 	/* fill cache info and add to free list */
 	for(i=0; i<req_size; i++) {
+		/* 初始化slot中的所有cache entry */
 		info = slot->cache_info + i;
 		info->lpaddr = 0;
 		info->ref = 0;
 		if(lazy_init == NVMED_FALSE) {
 			info->paddr = paList[i];
+			/* 初始化过的cache */
 			FLAG_SET(info, CACHE_FREE);
 		}
 		else {
 			info->paddr = 0;
+			/* 未初始化过的cache */
 			FLAG_SET(info, CACHE_UNINIT | CACHE_FREE);
 		}
+		/* cache的虚拟地址 */
 		info->ptr = slot->cache_ptr + (i*PAGE_SIZE);
 
 		TAILQ_INSERT_HEAD(&nvmed->free_head, info, cache_list);
 	}
 
 	free(paList);
-	
+	/* nvmed中cache的数量 */
 	nvmed->num_cache_size = size;
 
 	pthread_spin_unlock(&nvmed->mngt_lock);
@@ -740,18 +747,21 @@ void* nvmed_process_cq(void *data) {
 	NVMED_QUEUE* nvmed_queue;
 
 	while(1) {
+		/* 请求suspend时 */
 		if(nvmed->process_cq_status == TD_STATUS_REQ_SUSPEND) {
 			pthread_mutex_lock(&nvmed->process_cq_mutex);
 			nvmed->process_cq_status = TD_STATUS_SUSPEND;
+			/* 睡眠,等待pthread_cond_signal唤醒 */
 			pthread_cond_wait(&nvmed->process_cq_cond, &nvmed->process_cq_mutex);
 			pthread_mutex_unlock(&nvmed->process_cq_mutex);
 			nvmed->process_cq_status = TD_STATUS_RUNNING;
 		}
 
+		/* 请求cq处理线程退出 */
 		if(nvmed->process_cq_status == TD_STATUS_REQ_STOP) {
 			break;
 		}
-		
+		/* 运行状态,处理nvmed上每一个queue */
 		for (nvmed_queue = nvmed->queue_head.lh_first; 
 				nvmed_queue != NULL; nvmed_queue = nvmed_queue->queue_list.le_next) {
 			if(FLAG_ISSET(nvmed_queue, QUEUE_MANUAL_CQ))
@@ -814,7 +824,7 @@ NVMED* nvmed_open(char* path, int flags) {
 		nvmed_printf("%s: fail to open nvme device file\n", path);
 		return NULL;
 	}
-	
+	/* 打开admin节点 */
 	fd = open(admin_path, 0);
 	if(fd < 0) {
 		nvmed_printf("%s: fail to open nvme device file\n", admin_path);
@@ -858,6 +868,7 @@ NVMED* nvmed_open(char* path, int flags) {
 	pthread_spin_init(&nvmed->mngt_lock, 0);
 
 	// PROCESS_CQ THREAD
+	/* 初始化时cq thread状态是TD_STATUS_STOP的 */
 	nvmed->process_cq_status = TD_STATUS_STOP;
 
 	pthread_cond_init(&nvmed->process_cq_cond, NULL);
@@ -866,7 +877,7 @@ NVMED* nvmed_open(char* path, int flags) {
 
 	if(!__FLAG_ISSET(flags, NVMED_NO_CACHE)) {
 		// CACHE
-		/* 如果使用了cache.最少使用4MB作为cache */
+		/* 如果使用了cache.最少使用4MB个page作为cache */
 		if((nvmed->dev_info->max_hw_sectors * 512) / PAGE_SIZE > NVMED_CACHE_INIT_NUM_PAGES)
 			num_cache = (nvmed->dev_info->max_hw_sectors * 512) / PAGE_SIZE;
 		else
@@ -881,6 +892,7 @@ NVMED* nvmed_open(char* path, int flags) {
 	
 		// CACHE - INIT
 		LIST_INIT(&nvmed->slot_head);
+		/* 每次申请256 * 100个cache */
 		for(idx=0; idx<=num_cache; idx+=(256 * 100))
 			nvmed_cache_alloc(nvmed, idx, 
 				__FLAG_ISSET(flags, NVMED_CACHE_LAZY_INIT));
@@ -1498,6 +1510,7 @@ NVMED_BOOL nvmed_rw_verify_area(NVMED_HANDLE* nvmed_handle,
 /*
  * Make I/O request from User memory
  */
+/* nvme_write/nvme_pwrite private都是NULL */
 ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf, 
 		unsigned long start_lba, unsigned int len, NVMED_BOOL pio, void* private) {
 	NVMED_AIO_CTX* context = private;
@@ -1519,7 +1532,7 @@ ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	//  - Using page cache
 	// Sync - Polling
 	// Async - return wo/poll
-	
+	/* len必须以512对齐 */
 	if(len % 512) return 0;
 
 	if(!nvmed_rw_verify_area(nvmed_handle, start_lba, len))
