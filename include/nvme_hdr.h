@@ -61,6 +61,7 @@ struct nvme_rw_command {
 	__le64			metadata;
 	__le64			prp1;
 	__le64			prp2;
+	/* dword 11 */
 	__le64			slba;
 	__le16			length;
 	__le16			control;

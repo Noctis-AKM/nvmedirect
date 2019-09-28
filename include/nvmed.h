@@ -69,6 +69,7 @@ typedef struct nvmed_device_info {
 	unsigned int ns_id;
 	int q_depth;
 	u64 capacity;
+	/* 硬件一次可以处理的512 sector的个数 */
 	u32 max_hw_sectors;
 	u32 stripe_size;
 	u32 db_stride;

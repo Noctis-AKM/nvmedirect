@@ -265,7 +265,9 @@ typedef struct nvmed_handle {
 
 	void* prpBase;
 	pthread_spinlock_t prpBuf_lock;
+	/* void *数组.每一个prpBuf指向了一个page大小的虚拟地址 */
 	void** prpBuf;
+	/* prpBuf对应的物理地址数组 */
 	u64* pa_prpBuf;
 	int prpBuf_size;
 	/* prp的可用page */
