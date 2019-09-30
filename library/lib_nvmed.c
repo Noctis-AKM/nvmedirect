@@ -8,12 +8,12 @@
  * modify it under the terms of the GNU General Public License
  * as published by the Free Software Foundation; either version 2
  * of the License, or (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
@@ -38,13 +38,13 @@
 #define nvmed_printf(fmt, args...) fprintf(stdout, fmt, ##args)
 #define nvmed_err(fmt, args...) fprintf(stderr, fmt, ##args)
 
-ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf, 
+ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		unsigned long start_lba, unsigned int len, NVMED_BOOL pio, void* private);
-ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__cache, 
+ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__cache,
 		unsigned long start_lba, unsigned int len, int __flag);
-ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf, 
+ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		unsigned long start_lba, unsigned int len, NVMED_BOOL pio, void* private);
-ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf, 
+ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		unsigned long start_lba, unsigned int len, NVMED_BOOL pio, void* private);
 
 void nvmed_flush_handle(NVMED_HANDLE* nvmed_handle);
@@ -62,7 +62,7 @@ int virt_to_phys(NVMED* nvmed, void* addr, u64* paArr, unsigned int num_bytes) {
 	nvmed_buf.addr = addr;
 	nvmed_buf.size = num_pages;
 	nvmed_buf.pfnList = paArr;
-	
+
 	ret = ioctl(nvmed->ns_fd, NVMED_IOCTL_GET_BUFFER_ADDR, &nvmed_buf);
 	if(ret < 0) return 0;
 
@@ -87,7 +87,7 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 		nvmed_printf("%s: Cache shrinking is not supported\n", nvmed->ns_path);
 		return -NVMED_FAULT;
 	}
-	
+
 	pthread_spin_lock(&nvmed->mngt_lock);
 
 	/* 额外请求的page个数. */
@@ -106,7 +106,7 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 	slot->size = req_size;
 	/* 将slot插入nvmed的链表 */
 	LIST_INSERT_HEAD(&nvmed->slot_head, slot, slot_list);
-	
+
 	/* Initialize memory and translate virt to phys addr */
 	if(!lazy_init) {
 		paList = calloc(1, sizeof(u64) * req_size);
@@ -146,7 +146,7 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 }
 
 /*
- * Get PRP Buffer of Handle 
+ * Get PRP Buffer of Handle
  */
 /* 从handle中获取一个prp buffer */
 void* nvmed_handle_get_prp(NVMED_HANDLE* nvmed_handle, u64* pa) {
@@ -210,7 +210,7 @@ void nvmed_complete_iod(NVMED_IOD* iod) {
 	nvmed_handle = iod->nvmed_handle;
 	//nvmed_queue = HtoQ(nvmed_handle);
 	nvmed = HtoD(nvmed_handle);
-	/* 释放od的prp到handle的prp队列中 */
+	/* io完成,释放iod的prp page到handle的prp队列中,供其他人使用 */
 	if(iod->prp_addr != NULL)
 		nvmed_handle_put_prp(nvmed_handle, iod->prp_addr, iod->prp_pa);
 
@@ -228,10 +228,10 @@ void nvmed_complete_iod(NVMED_IOD* iod) {
 	}
 
 	if(iod->intr_status) {
+		/* 中断监控函数调用进来的,唤醒中断等待线程 */
 		while(iod->intr_status != IOD_INTR_WAITING);
 
 		pthread_mutex_lock(&iod->intr_cq_mutex);
-		/* io完成,唤醒polling线程 */
 		pthread_cond_signal(&iod->intr_cq_cond);
 		pthread_mutex_unlock(&iod->intr_cq_mutex);
 	}
@@ -242,7 +242,7 @@ void nvmed_complete_iod(NVMED_IOD* iod) {
 		for(i=0; i<iod->num_cache; i++) {
 			cache = iod->cache[i];
 			pthread_spin_lock(&nvmed->cache_list_lock);
-			
+
 			pthread_spin_lock(&nvmed_handle->dirty_list_lock);
 			/* 取消cache的locked和writeback标志 */
 			FLAG_UNSET_SYNC(cache, CACHE_LOCKED);
@@ -289,6 +289,7 @@ int nvmed_queue_complete(NVMED_QUEUE* nvmed_queue) {
 	pthread_spin_lock(&nvmed_queue->cq_lock);
 	head = nvmed_queue->cq_head;
 	phase = nvmed_queue->cq_phase;
+	/* 来一次中断,清理所有的cqe */
 	for(;;) {
 		cqe = (volatile struct nvme_completion *)&nvmed_queue->cqes[head];
 		/* phase bit不一样,说明cq已经空了 */
@@ -346,11 +347,11 @@ void nvmed_io_polling(NVMED_HANDLE* nvmed_handle, u16 target_id) {
 	nvmed = HtoD(nvmed_handle);
 
 	pthread_spin_lock(&nvmed_queue->cq_lock);
-	/* 如果 */
+
 	while(1) {
 		head = nvmed_queue->cq_head;
 		phase = nvmed_queue->cq_phase;
-		/* 遭到特定的iod */
+		/* 找到特定的iod */
 		iod = nvmed_queue->iod_arr + target_id;
 		/* 特定的io完成了,那么polling就退出 */
 		if(iod->status == IO_COMPLETE) {
@@ -370,7 +371,7 @@ void nvmed_io_polling(NVMED_HANDLE* nvmed_handle, u16 target_id) {
 			phase = !phase;
 		}
 
-		/* 顺便处理掉其他cq */
+		/* 有io返回,那么就处理iod array对应的iod */
 		iod = nvmed_queue->iod_arr + cqe->command_id;
 		nvmed_complete_iod(iod);
 
@@ -410,7 +411,7 @@ NVMED_HANDLE* nvmed_handle_create(NVMED_QUEUE* nvmed_queue, int flags) {
 	nvmed_handle->dispatched_io = 0;
 
 	/* PRP Buffer Create */
-	/* 每个handle预分配64个page */
+	/* 每个handle预分配64个prp page.每个page用来保存prp entry */
 	nvmed_handle->prpBuf_size = NVMED_NUM_PREALLOC_PRP;
 	nvmed_handle->prpBuf = calloc(1, sizeof(void *) * nvmed_handle->prpBuf_size);
 	nvmed_handle->pa_prpBuf = calloc(1, sizeof(u64) * nvmed_handle->prpBuf_size);
@@ -420,7 +421,7 @@ NVMED_HANDLE* nvmed_handle_create(NVMED_QUEUE* nvmed_queue, int flags) {
 	memset(tempPtr, 0, PAGE_SIZE * nvmed_handle->prpBuf_size);
 
 	/* 虚拟地址转换成物理地址 */
-	virt_to_phys(nvmed_queue->nvmed, tempPtr, nvmed_handle->pa_prpBuf, 
+	virt_to_phys(nvmed_queue->nvmed, tempPtr, nvmed_handle->pa_prpBuf,
 			PAGE_SIZE * nvmed_handle->prpBuf_size);
 
 	/* 获取prpBuf */
@@ -434,7 +435,7 @@ NVMED_HANDLE* nvmed_handle_create(NVMED_QUEUE* nvmed_queue, int flags) {
 	nvmed_handle->prpBuf_tail = 0;
 
 	if(__FLAG_ISSET(flags, HANDLE_DIRECT_IO)) {
-		nvmed_handle->read_func 	= nvmed_io_rw; 
+		nvmed_handle->read_func 	= nvmed_io_rw;
 		nvmed_handle->write_func	= nvmed_io_rw;
 	}
 	else {
@@ -564,6 +565,7 @@ int nvmed_handle_feature_set(NVMED_HANDLE* nvmed_handle, int feature, int value)
 				FLAG_UNSET(nvmed_handle, HANDLE_DIRECT_IO);
 			break;
 
+		/* 同步io,在下发一个命令后,必须等待io完成 */
 		case HANDLE_SYNC_IO:
 			if(value)
 				FLAG_SET(nvmed_handle, HANDLE_SYNC_IO);
@@ -611,7 +613,7 @@ void* nvmed_process_cq_intr(void *data) {
 			nvmed_queue_complete(nvmed_queue);
 		}
 	}
-	
+
 	pthread_exit((void *)NULL);
 };
 
@@ -627,7 +629,7 @@ NVMED_QUEUE* nvmed_queue_create(NVMED* nvmed, int flags) {
 	NVMED_CREATE_QUEUE_ARGS create_args;
 
 	pthread_spin_lock(&nvmed->mngt_lock);
-	
+
 	memset(&create_args, 0x0, sizeof(create_args));
 
 	if(__FLAG_ISSET(flags, QUEUE_INTERRUPT))
@@ -640,12 +642,12 @@ NVMED_QUEUE* nvmed_queue_create(NVMED* nvmed, int flags) {
 
 		return NULL;
 	}
-	
+
 	nvmed_queue = calloc(1, sizeof(NVMED_QUEUE));
 	nvmed_queue->nvmed = nvmed;
 	nvmed_queue->flags = flags;
 	nvmed_queue->qid = create_args.qid;
-	
+
 	if(nvmed->dev_info->part_no != 0) {
 		sprintf(pathBase, "/proc/nvmed/nvme%dn%dp%d/%d",
 			nvmed->dev_info->instance, nvmed->dev_info->ns_id, nvmed->dev_info->part_no, nvmed_queue->qid);
@@ -659,13 +661,13 @@ NVMED_QUEUE* nvmed_queue_create(NVMED* nvmed, int flags) {
 	/* 在用户态获取sq/cq/db的地址 */
 	sprintf(pathBuf, "%s/sq", pathBase);
 	nvmed_queue->sq_fd = open(pathBuf, O_RDWR);
-	nvmed_queue->sq_cmds = mmap(0, SQ_SIZE(nvmed->dev_info->q_depth), 
+	nvmed_queue->sq_cmds = mmap(0, SQ_SIZE(nvmed->dev_info->q_depth),
 			PROT_READ | PROT_WRITE, MAP_SHARED, nvmed_queue->sq_fd, 0);
 
 	/* Map CQ */
 	sprintf(pathBuf, "%s/cq", pathBase);
 	nvmed_queue->cq_fd = open(pathBuf, O_RDWR);
-	nvmed_queue->cqes = mmap(0, CQ_SIZE(nvmed->dev_info->q_depth), 
+	nvmed_queue->cqes = mmap(0, CQ_SIZE(nvmed->dev_info->q_depth),
 			PROT_READ | PROT_WRITE, MAP_SHARED, nvmed_queue->cq_fd, 0);
 
 	/* Map DQ */
@@ -691,12 +693,12 @@ NVMED_QUEUE* nvmed_queue_create(NVMED* nvmed, int flags) {
 	pthread_spin_init(&nvmed_queue->mngt_lock, 0);
 	pthread_spin_init(&nvmed_queue->sq_lock, 0);
 	pthread_spin_init(&nvmed_queue->cq_lock, 0);
-	
+
 	LIST_INSERT_HEAD(&nvmed->queue_head, nvmed_queue, queue_list);
 	nvmed->numQueue++;
 
 	nvmed_queue->numHandle = 0;
-	
+
 	/* 用一个单独的线程去处理内核中断 */
 	if(__FLAG_ISSET(flags, QUEUE_INTERRUPT)) {
 		pthread_create(&nvmed_queue->process_cq_intr, NULL, &nvmed_process_cq_intr, (void*)nvmed_queue);
@@ -719,12 +721,13 @@ int nvmed_queue_destroy(NVMED_QUEUE* nvmed_queue) {
 	if(nvmed_queue->numHandle) return -NVMED_FAULT;
 
 	nvmed = nvmed_queue->nvmed;
-	
+
 	pthread_spin_lock(&nvmed->mngt_lock);
+	/* 需要移除一个queue,确保cq处理线程suspend */
 	if(nvmed->process_cq_status != TD_STATUS_STOP) {
 		while(nvmed->process_cq_status == TD_STATUS_SUSPEND ||
 				nvmed->process_cq_status == TD_STATUS_REQ_SUSPEND);
-	
+
 		if(nvmed->process_cq_status == TD_STATUS_RUNNING) {
 			nvmed->process_cq_status = TD_STATUS_REQ_SUSPEND;
 			while(nvmed->process_cq_status == TD_STATUS_REQ_SUSPEND);
@@ -744,14 +747,14 @@ int nvmed_queue_destroy(NVMED_QUEUE* nvmed_queue) {
 
 	pthread_spin_destroy(&nvmed_queue->sq_lock);
 	pthread_spin_destroy(&nvmed_queue->cq_lock);
-	
+
 	ret = ioctl(nvmed->ns_fd, NVMED_IOCTL_QUEUE_DELETE, &nvmed_queue->qid);
 	if(ret==0) {
 		LIST_REMOVE(nvmed_queue, queue_list);
 		pthread_mutex_lock(&nvmed->process_cq_mutex);
 		pthread_cond_signal(&nvmed->process_cq_cond);
 		pthread_mutex_unlock(&nvmed->process_cq_mutex);
-		
+
 		nvmed->numQueue--;
 	}
 
@@ -789,12 +792,14 @@ void* nvmed_process_cq(void *data) {
 			break;
 		}
 		/* 运行状态,处理nvmed上每一个queue */
-		for (nvmed_queue = nvmed->queue_head.lh_first; 
+		for (nvmed_queue = nvmed->queue_head.lh_first;
 				nvmed_queue != NULL; nvmed_queue = nvmed_queue->queue_list.le_next) {
+			/* 中断开启的线程或者自己处理cqe的线程,自己处理cq */
 			if(FLAG_ISSET(nvmed_queue, QUEUE_MANUAL_CQ))
 				continue;
 
 			pthread_spin_lock(&nvmed_queue->mngt_lock);
+			/* 处理单个queue上所有的cqe */
 			nvmed_queue_complete(nvmed_queue);
 			pthread_spin_unlock(&nvmed_queue->mngt_lock);
 		}
@@ -864,7 +869,7 @@ NVMED* nvmed_open(char* path, int flags) {
 	ret = ioctl(fd, NVMED_IOCTL_NVMED_INFO, dev_info);
 	if(ret<0) {
 		close(fd);
-		
+
 		return NULL;
 	}
 
@@ -876,7 +881,7 @@ NVMED* nvmed_open(char* path, int flags) {
 		free(admin_path);
 		free(dev_info);
 		close(fd);
-		
+
 		nvmed_printf("%s: fail to allocation nvmed buffer\n", admin_path);
 
 		return NULL;
@@ -891,7 +896,7 @@ NVMED* nvmed_open(char* path, int flags) {
 	// QUEUE
 	nvmed->numQueue = 0;
 	LIST_INIT(&nvmed->queue_head);
-	
+
 	pthread_spin_init(&nvmed->mngt_lock, 0);
 
 	// PROCESS_CQ THREAD
@@ -911,17 +916,17 @@ NVMED* nvmed_open(char* path, int flags) {
 			num_cache = NVMED_CACHE_INIT_NUM_PAGES;
 
 		nvmed->num_cache_usage = 0;
-	
+
 		TAILQ_INIT(&nvmed->lru_head);
 		TAILQ_INIT(&nvmed->free_head);
 		pthread_rwlock_init(&nvmed->cache_radix_lock, 0);
 		pthread_spin_init(&nvmed->cache_list_lock, 0);
-	
+
 		// CACHE - INIT
 		LIST_INIT(&nvmed->slot_head);
 		/* 每次申请256 * 100个cache */
 		for(idx=0; idx<=num_cache; idx+=(256 * 100))
-			nvmed_cache_alloc(nvmed, idx, 
+			nvmed_cache_alloc(nvmed, idx,
 				__FLAG_ISSET(flags, NVMED_CACHE_LAZY_INIT));
 
 		INIT_RADIX_TREE(&nvmed->cache_root);
@@ -949,9 +954,11 @@ int nvmed_close(NVMED* nvmed) {
 	//END PROCESS_CQ THREAD
 	if(nvmed->process_cq_status != TD_STATUS_STOP) {
 		if(nvmed->process_cq_status == TD_STATUS_RUNNING) {
+			/* 对于正在running的cq处理线程,先要让它suspend,才能发送stop命令 */
 			nvmed->process_cq_status = TD_STATUS_REQ_SUSPEND;
 		}
 
+		/* 等待cq处理线程suspend */
 		while(nvmed->process_cq_status == TD_STATUS_REQ_SUSPEND);
 
 		if(nvmed->process_cq_status == TD_STATUS_SUSPEND) {
@@ -961,6 +968,7 @@ int nvmed_close(NVMED* nvmed) {
 		}
 
 		while(nvmed->process_cq_status != TD_STATUS_RUNNING);
+		/* nvmed关闭的时候,cq处理线程退出 */
 		nvmed->process_cq_status = TD_STATUS_REQ_STOP;
 		pthread_join(nvmed->process_cq_td, (void **)&status);
 	}
@@ -1008,7 +1016,7 @@ int nvmed_feature_set(NVMED* nvmed, int feature, int value) {
 			FLAG_SET(nvmed, NVMED_CACHE_LAZY_INIT);
 			break;
 		case NVMED_CACHE_SIZE:
-			return nvmed_cache_alloc(nvmed, value, 
+			return nvmed_cache_alloc(nvmed, value,
 					nvmed_feature_get(nvmed, NVMED_CACHE_LAZY_INIT));
 	};
 
@@ -1018,8 +1026,8 @@ int nvmed_feature_set(NVMED* nvmed, int feature, int value) {
 /*
  * Send I/O to submission queue and ring SQ Doorbell
  */
-ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode, 
-		u64 prp1, u64 prp2, void* prp2_addr, NVMED_CACHE *__cache, 
+ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
+		u64 prp1, u64 prp2, void* prp2_addr, NVMED_CACHE *__cache,
 		unsigned long start_lba, unsigned int len, int flags, NVMED_AIO_CTX* context) {
 	NVMED_QUEUE* nvmed_queue;
 	NVMED* nvmed;
@@ -1040,12 +1048,15 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 		iod = nvmed_queue->iod_arr + target_id;
 		if(nvmed_queue->iod_pos == nvmed->dev_info->q_depth)
 			nvmed_queue->iod_pos = 0;
+		/* 找到一个未出化的iod */
 		if(iod->status != IO_INIT)
 			break;
 	}
 	iod->sq_id = nvmed_queue->sq_tail;
+	/* 用于在nvmed_complete_iod中释放prp page */
 	iod->prp_addr = prp2_addr;
 	iod->prp_pa = prp2;
+	/* 发起io */
 	iod->status = IO_INIT;
 	iod->num_cache = 0;
 	iod->cache = NULL;
@@ -1066,10 +1077,12 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 
 	if(__cache != NULL) {
 		pthread_spin_lock(&nvmed_queue->iod_arr_lock);
+		/* cache的个数 */
 		num_cache = len / PAGE_SIZE;
 		cache = __cache;
 		iod->cache = calloc(num_cache, sizeof(NVMED_CACHE*));
 		for(i=0; i<num_cache; i++) {
+			/* iod获取cache */
 			iod->cache[i] = cache;
 			cache = cache->io_list.tqe_next;
 		}
@@ -1077,6 +1090,7 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 		pthread_spin_unlock(&nvmed_queue->iod_arr_lock);
 	}
 
+	/* 从sq_tail中取出cmnd,更行这个cmnd,然后写doorbell */
 	cmnd = &nvmed_queue->sq_cmds[nvmed_queue->sq_tail];
 	memset(cmnd, 0, sizeof(*cmnd));
 
@@ -1088,7 +1102,7 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 			cmnd->rw.opcode = nvme_cmd_flush;
 			cmnd->rw.command_id = target_id;
 			cmnd->rw.nsid = nvmed->dev_info->ns_id;
-			
+
 			break;
 
 		case nvme_cmd_write:
@@ -1102,9 +1116,9 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 			cmnd->rw.length = (len >> nvmed->dev_info->lba_shift) - 1;
 			cmnd->rw.control = 0;
 			cmnd->rw.dsmgmt = 0;
-			
+
 			break;
-		
+
 		case nvme_cmd_dsm:
 			cmnd->dsm.opcode = nvme_cmd_dsm;
 			cmnd->dsm.command_id = target_id;
@@ -1112,12 +1126,13 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 			cmnd->dsm.prp1 = prp1;
 			cmnd->dsm.prp2 = 0;
 			cmnd->dsm.nr = 0;
+			/* trim */
 			cmnd->dsm.attributes = NVME_DSMGMT_AD;
-			
+
 			break;
 	}
 
-	if(++nvmed_queue->sq_tail == nvmed->dev_info->q_depth) 
+	if(++nvmed_queue->sq_tail == nvmed->dev_info->q_depth)
 		nvmed_queue->sq_tail = 0;
 
 	COMPILER_BARRIER();
@@ -1127,15 +1142,17 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 	//nvmed_handle->dispatched_io++;
 
 	pthread_spin_unlock(&nvmed_queue->sq_lock);
-	
+
 	/* If Sync I/O => Polling */
 	if(__FLAG_ISSET(flags, HANDLE_SYNC_IO)) {
 		if(iod->intr_status == IOD_INTR_INACTIVE) {
+			/* 使用polling的方式等待特定io完成 */
 			nvmed_io_polling(nvmed_handle, target_id);
 		}
 		else {
 			pthread_mutex_lock(&iod->intr_cq_mutex);
 			iod->intr_status = IOD_INTR_WAITING;
+			/* 等待中断唤醒.中断监控线程会调用nvmed_complete_iod唤醒当前线程 */
 			pthread_cond_wait(&iod->intr_cq_cond, &iod->intr_cq_mutex);
 			pthread_mutex_unlock(&iod->intr_cq_mutex);
 
@@ -1166,7 +1183,7 @@ unsigned int __evict_handle_dirty_page(NVMED_HANDLE* handle) {
 		TAILQ_REMOVE(&handle->io_head, handle->io_head.tqh_first, io_list);
 
 	//		TAILQ_INIT(&handle->io_head);
-	
+
 	handle->num_io_head = 0;
 
 	return io_len;
@@ -1184,11 +1201,13 @@ NVMED_CACHE* nvmed_get_cache(NVMED_HANDLE* nvmed_handle) {
 	pthread_spin_lock(&nvmed->cache_list_lock);
 
 restart:
+	/* 如果free_head上没有cache,就从lru上拿 */
 	cache = nvmed->free_head.tqh_first;
 	if(cache==NULL)  {
 		//HEAD -> LRU, //TAIL -> MRU
 		//EVICT - LRU
 		cache = nvmed->lru_head.tqh_first;
+		/* 干净的cache才能被使用 */
 		if(!FLAG_ISSET(cache, CACHE_DIRTY)) {
 			TAILQ_REMOVE(&nvmed->lru_head, cache, cache_list);
 			radix_tree_delete(&nvmed->cache_root, cache->lpaddr);
@@ -1198,7 +1217,7 @@ restart:
 		else {
 			//////////// handle io_list evict!!
 			TAILQ_INIT(&temp_head);
-			
+
 			while(FLAG_ISSET_SYNC(cache, CACHE_LOCKED) || cache->ref != 0) {
 				pthread_spin_unlock(&nvmed->cache_list_lock);
 				pthread_rwlock_unlock(&nvmed->cache_radix_lock);
@@ -1207,10 +1226,10 @@ restart:
 				pthread_spin_lock(&nvmed->cache_list_lock);
 				goto restart;
 			}
-	
+
 			pthread_spin_unlock(&nvmed->cache_list_lock);
 			pthread_rwlock_unlock(&nvmed->cache_radix_lock);
-		
+
 			handle = cache->handle;
 			pthread_spin_lock(&handle->io_head_lock);
 
@@ -1219,7 +1238,8 @@ restart:
 				pthread_spin_lock(&nvmed->cache_list_lock);
 				goto restart;
 			}
-			
+
+			/* 将脏cache全部写入设备 */
 			__evict_handle_dirty_page(handle);
 
 			pthread_spin_unlock(&handle->io_head_lock);
@@ -1229,8 +1249,7 @@ restart:
 
 			goto restart;
 		}
-	}
-	else {
+	} else {
 		// Remove From Free Queue
 		TAILQ_REMOVE(&nvmed->free_head, cache, cache_list);
 		FLAG_UNSET_SYNC(cache, CACHE_FREE);
@@ -1249,6 +1268,7 @@ restart:
 	return ret_cache;
 }
 
+/* buffer format:  [User Buf(4KB * num_pages)][MAGIC(4Bytes)][Num Pages(4Bytes)][PA LIST u64 * num_pages] */
 unsigned int nvmed_check_buffer(void* nvmed_buf) {
 	size_t buf_size;
 	unsigned int predict_size, actual_size=0;
@@ -1287,10 +1307,11 @@ void* nvmed_get_buffer(NVMED* nvmed, unsigned int num_pages) {
 	void *bufAddr;
 	int ret;
 	unsigned int *magic, *size;
+	/* magic和num pages各占4 bytes */
 	int req_size = (PAGE_SIZE * num_pages) + (sizeof(u64) * num_pages) + 8;
-	
+
 	if(num_pages == 0) return NULL;
-	
+	/* 分配内存并且mlock住 */
 	posix_memalign(&bufAddr, PAGE_SIZE, req_size);
 	if(bufAddr == NULL) return NULL;
 	mlock(bufAddr, PAGE_SIZE * req_size);
@@ -1300,7 +1321,7 @@ void* nvmed_get_buffer(NVMED* nvmed, unsigned int num_pages) {
 	nvmed_buf.addr = bufAddr;
 	nvmed_buf.size = num_pages;
 	nvmed_buf.pfnList = bufAddr + (PAGE_SIZE * num_pages) + 8;
-	
+
 	ret = ioctl(nvmed->ns_fd, NVMED_IOCTL_GET_BUFFER_ADDR, &nvmed_buf);
 
 	if(ret < 0) {
@@ -1312,7 +1333,7 @@ void* nvmed_get_buffer(NVMED* nvmed, unsigned int num_pages) {
 	*magic = NVMED_BUF_MAGIC;
 	size = bufAddr + (PAGE_SIZE * num_pages)+4;
 	*size = num_pages;
-	
+	/* 返回nvme_buf */
 	return bufAddr;
 }
 
@@ -1332,10 +1353,10 @@ void nvmed_put_buffer(void* nvmed_buf) {
 /*
  * Make PRP List for Multiple page I/O from user buffer
  */
-int make_prp_list(NVMED_HANDLE* nvmed_handle, void* buf, 
-		unsigned long lba_offs, unsigned int io_size, u64* __paBase, 
+int make_prp_list(NVMED_HANDLE* nvmed_handle, void* buf,
+		unsigned long lba_offs, unsigned int io_size, u64* __paBase,
 		u64* prp1, u64* prp2, void** prp2_addr) {
-	/* 对应哪个buffer,一个buffer一个page大小 */
+	/* 对应哪个buffer,一个buffer一个page大小.startBufPos是pa list中entry的下标off */
 	unsigned int startBufPos = lba_offs / PAGE_SIZE;
 	unsigned int numBuf = io_size / PAGE_SIZE;
 	unsigned int i;
@@ -1355,6 +1376,7 @@ int make_prp_list(NVMED_HANDLE* nvmed_handle, void* buf,
 	paList = malloc(sizeof(u64) * numBuf);
 
 	if(paBase == NULL) {
+		/* 不是通过nvmed_get_buffer的buffer,需要调用virt_to_phys获取物理地址 */
 		numBuf = virt_to_phys(HtoD(nvmed_handle), buf, paList, numBuf * PAGE_SIZE);
 		bufOffs = (unsigned long)buf % PAGE_SIZE;
 		/* __prp1起始地址,物理地址 */
@@ -1364,18 +1386,21 @@ int make_prp_list(NVMED_HANDLE* nvmed_handle, void* buf,
 			__prp2 = 0;
 		}
 		else if(numBuf == 2) {
-			/* 需要2个buffer */
+			/* 需要2个buffer,__prp2可以直接指向第二个物理地址 */
 			__prp2 = paList[1];
 		}
 		else {
+			/* 超过2个page,需要构造一个prp page. __prp2指向这个prp page */
 			prpBuf = nvmed_handle_get_prp(nvmed_handle, &__prp2);
 			*prp2_addr = prpBuf;
+			/* 填充这个prp page. 这个page中每一个entry记录一个64 bit的物理地址 */
 			for(i = 1; i < numBuf; i++) {
 				prpBuf[i-1] = paList[i];
 			}
 		}
 	}
 	else {
+		/* 通过nvmed_get_buffer分配的buffer,已经填充了pa list. */
 		paBase += startBufPos;
 		prpTmp = paBase;
 		__prp1 = *prpTmp;
@@ -1386,8 +1411,10 @@ int make_prp_list(NVMED_HANDLE* nvmed_handle, void* buf,
 			__prp2 = *(prpTmp+1);
 		}
 		else {
+			/* 获取prp page */
 			prpBuf = nvmed_handle_get_prp(nvmed_handle, &__prp2);
 			*prp2_addr = prpBuf;
+			/* prp entry指向buffer的物理地址 */
 			for(i = 1; i < numBuf; i++) {
 				prpBuf[i-1] = paBase[i];
 			}
@@ -1406,7 +1433,7 @@ int make_prp_list(NVMED_HANDLE* nvmed_handle, void* buf,
 /*
  * Make PRP List for Multiple page I/O from NVMeDirect Cache
  */
-int make_prp_list_from_cache(NVMED_HANDLE* nvmed_handle, NVMED_CACHE *__cache, 
+int make_prp_list_from_cache(NVMED_HANDLE* nvmed_handle, NVMED_CACHE *__cache,
 		int num_list, u64* prp1, u64* prp2, void** prp2_addr) {
 	NVMED_CACHE *cache;
 	u64 *prpBuf;
@@ -1419,9 +1446,11 @@ int make_prp_list_from_cache(NVMED_HANDLE* nvmed_handle, NVMED_CACHE *__cache,
 	__prp1 = cache->paddr;
 	if(num_list == 2) {
 		cache = cache->io_list.tqe_next;
+		/* 下一个cache的物理地址 */
 		__prp2 = cache->paddr;
 	}
 	else {
+		/* prp page */
 		prpBuf = nvmed_handle_get_prp(nvmed_handle, &__prp2);
 		*prp2_addr = prpBuf;
 		for(i=1; i<num_list; i++) {
@@ -1439,7 +1468,7 @@ int make_prp_list_from_cache(NVMED_HANDLE* nvmed_handle, NVMED_CACHE *__cache,
 /*
  * Make I/O request from NVMeDirect Cache
  */
-ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__cache, 
+ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__cache,
 		unsigned long start_lba, unsigned int len, int __flag) {
 	NVMED_QUEUE* nvmed_queue;
 	NVMED* nvmed;
@@ -1455,11 +1484,13 @@ ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__
 
 	if(len % PAGE_SIZE) return 0;
 
-	if(__flag != 0) flag = __flag;
-	else flag = nvmed_handle->flags;
+	if(__flag != 0)
+		flag = __flag;
+	else
+		flag = nvmed_handle->flags;
 
 	if(FLAG_ISSET(nvmed_handle, HANDLE_MQ)) {
-		nvmed_queue = nvmed_handle->mq_get_queue(nvmed_handle, opcode, 
+		nvmed_queue = nvmed_handle->mq_get_queue(nvmed_handle, opcode,
 				start_lba, len);
 
 		if(nvmed_queue == NULL)
@@ -1469,7 +1500,11 @@ ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__
 		nvmed_queue = HtoQ(nvmed_handle);
 	}
 	nvmed = nvmed_queue->nvmed;
-	
+
+	/*
+	 * nvmed处理cq的线程初始化的时候是TD_STATUS_STOP的.
+	 * 一旦有cached io,那么就会启动异步处理cq的线程
+	 */
 	if(nvmed->process_cq_status == TD_STATUS_STOP) {
 		nvmed->process_cq_status = TD_STATUS_REQ_SUSPEND;
 		pthread_create(&nvmed->process_cq_td, NULL, &nvmed_process_cq, (void*)nvmed);
@@ -1485,6 +1520,7 @@ ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__
 	cache = __cache;
 
 	num_cache = len / PAGE_SIZE;
+	/* 锁住所有的cache */
 	while(num_cache-- > 0) {
 		FLAG_SET_SYNC(cache, CACHE_LOCKED);
 		cache = cache->io_list.tqe_next;
@@ -1502,19 +1538,20 @@ ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__
 		num_cache = io_size / PAGE_SIZE;
 
 		make_prp_list_from_cache(nvmed_handle, cache, num_cache, &prp1, &prp2, &prp2_addr);
-		io = nvmed_io(nvmed_handle, opcode, prp1, prp2, prp2_addr, cache, 
+		io = nvmed_io(nvmed_handle, opcode, prp1, prp2, prp2_addr, cache,
 				io_lba, io_size, flag, NULL);
-		
+
 		if(io <= 0) break;
-		
+
 		remain -= io;
 		total_io += io;
 		io_lba += io;
 
+		/* 选择下一个cache */
 		while(num_cache-- > 0)
 			cache = cache->io_list.tqe_next;
 	}
-	
+
 	return total_io;
 }
 
@@ -1542,7 +1579,7 @@ NVMED_BOOL nvmed_rw_verify_area(NVMED_HANDLE* nvmed_handle,
  * Make I/O request from User memory
  */
 /* nvme_write/nvme_pwrite private都是NULL */
-ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf, 
+ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		unsigned long start_lba, unsigned int len, NVMED_BOOL pio, void* private) {
 	NVMED_AIO_CTX* context = private;
 	NVMED_QUEUE* nvmed_queue;
@@ -1570,7 +1607,7 @@ ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		return -1;
 
 	if(FLAG_ISSET(nvmed_handle, HANDLE_MQ)) {
-		nvmed_queue = nvmed_handle->mq_get_queue(nvmed_handle, opcode, 
+		nvmed_queue = nvmed_handle->mq_get_queue(nvmed_handle, opcode,
 				start_lba, len);
 
 		if(nvmed_queue == NULL)
@@ -1581,8 +1618,8 @@ ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	}
 	nvmed = nvmed_queue->nvmed;
 
-	/**/
-	if((!FLAG_ISSET(nvmed_handle, HANDLE_SYNC_IO)) && 
+	/* 非同步io,完成的io需要一个独立的线程去处理 */
+	if((!FLAG_ISSET(nvmed_handle, HANDLE_SYNC_IO)) &&
 			private == NULL &&
 			nvmed->process_cq_status == TD_STATUS_STOP) {
 		nvmed->process_cq_status = TD_STATUS_REQ_SUSPEND;
@@ -1599,9 +1636,12 @@ ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 
 	remain = len;
 	if(FLAG_ISSET(nvmed_handle, HANDLE_HINT_DMEM)) {
+		/* 从nvmed_get_buffer中获取nvme_buf */
 		nvmed_buf_size = nvmed_check_buffer(buf);
+		/* pa list的地址 */
 		paBase = buf + (PAGE_SIZE * nvmed_buf_size) + 8;
 	}
+	/* 使用context提前准备好的paBase */
 	if(context != NULL && context->prpList != NULL)
 		paBase = context->prpList;
 
@@ -1615,11 +1655,12 @@ ssize_t nvmed_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			io_size = remain;
 		/* io的起始lba */
 		io_lba = total_io + start_lba;
-		make_prp_list(nvmed_handle, next_buf, total_io , io_size, 
+		make_prp_list(nvmed_handle, next_buf, total_io , io_size,
 					paBase, &prp1, &prp2, &prp2_addr);
-		io = nvmed_io(nvmed_handle, opcode, prp1, prp2, prp2_addr, NULL, 
+		/* prp2_addr是prp page的虚拟地址 */
+		io = nvmed_io(nvmed_handle, opcode, prp1, prp2, prp2_addr, NULL,
 				io_lba, io_size, nvmed_handle->flags, context);
-		
+
 		if(io <= 0) break;
 
 		remain -= io;
@@ -1641,7 +1682,7 @@ off_t nvmed_lseek(NVMED_HANDLE* nvmed_handle, off_t offset, int whence) {
 			nvmed_handle->offset = offset;
 			ret = nvmed_handle->offset;
 		}
-		else 
+		else
 			ret = -1;
 	}
 	else if(whence == SEEK_CUR) {
@@ -1664,6 +1705,7 @@ off_t nvmed_lseek(NVMED_HANDLE* nvmed_handle, off_t offset, int whence) {
 	return ret;
 }
 
+/* aio提交的io个数 */
 int nvmed_aio_queue_submit(NVMED_HANDLE* handle) {
 	NVMED_QUEUE* nvmed_queue;
 	int num_submit = 0;
@@ -1705,7 +1747,7 @@ int nvmed_aio_write(NVMED_AIO_CTX* context) {
 	return nvmed_aio_enqueue(context);
 }
 
-ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf, 
+ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		unsigned long start_lba, unsigned int len, NVMED_BOOL pio, void* private) {
 	NVMED_QUEUE *nvmed_queue = HtoQ(nvmed_handle);
 	NVMED *nvmed = nvmed_queue->nvmed;
@@ -1730,7 +1772,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	cacheP = calloc(io_blocks, sizeof(NVMED_CACHE*));
 
 	pthread_rwlock_rdlock(&nvmed->cache_radix_lock);
-	find_blocks = radix_tree_gang_lookup(&nvmed->cache_root, 
+	find_blocks = radix_tree_gang_lookup(&nvmed->cache_root,
 			(void **)cacheP, start_block, io_blocks);
 	pthread_rwlock_unlock(&nvmed->cache_radix_lock);
 
@@ -1759,8 +1801,8 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			cache = nvmed_get_cache(nvmed_handle);
 			TAILQ_INSERT_TAIL(&temp_head, cache, io_list);
 		}
-		/* 读取设备,填充temp_head */
-		nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first, 
+		/* 采用同步io读取设备,填充temp_head */
+		nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first,
 				start_block * PAGE_SIZE, io_blocks * PAGE_SIZE, HANDLE_SYNC_IO);
 
 		cache_idx = 0;
@@ -1820,7 +1862,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			//Find Hole?
 
 			cacheTarget = malloc(sizeof(NVMED_CACHE*) * io_blocks);
-			
+
 			io_nums = 0;
 			io_start = 0;
 
@@ -1832,9 +1874,9 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 					/* 处理这个命中的cache */
 					if(io_nums != 0) {
 						/* 中间有io_nums个cache是新的,需要填充 */
-						nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first, 
+						nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first,
 							io_start * PAGE_SIZE, io_nums * PAGE_SIZE, HANDLE_SYNC_IO);
-						
+
 						pthread_rwlock_wrlock(&nvmed->cache_radix_lock);
 						pthread_spin_lock(&nvmed->cache_list_lock);
 
@@ -1862,8 +1904,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 					TAILQ_REMOVE(&nvmed->lru_head, cache, cache_list);
 					TAILQ_INSERT_TAIL(&nvmed->lru_head,cache, cache_list);
 					pthread_spin_unlock(&nvmed->cache_list_lock);
-				}
-				else {
+				} else {
 					/* cacheP中这个cache并不是对应这个block的,那么就从handle中分配一个cache entry */
 					cache = nvmed_get_cache(nvmed_handle);
 					cache->lpaddr = block_idx;
@@ -1887,7 +1928,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 
 		/* 有部分cache是新分配的,需要从设备获取数据填充 */
 		if(io_nums != 0) {
-			nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first, 
+			nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first,
 					io_start * PAGE_SIZE, io_nums * PAGE_SIZE, HANDLE_SYNC_IO);
 
 			pthread_rwlock_wrlock(&nvmed->cache_radix_lock);
@@ -1945,7 +1986,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 }
 
 /* pio表示是否是pwrite调用进来的 */
-ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf, 
+ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		unsigned long start_lba, unsigned int len, NVMED_BOOL pio, void* private) {
 	NVMED *nvmed = HtoD(nvmed_handle);
 	NVMED_CACHE **cacheP, *cache;
@@ -1973,10 +2014,10 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	 * 查找start_block开始的io_blocks个block的cache. 找到的cache数量放在find_blocks中.
 	 * 找到的cache放到数组cacheP中
 	 */
-	find_blocks = radix_tree_gang_lookup(&nvmed->cache_root, 
+	find_blocks = radix_tree_gang_lookup(&nvmed->cache_root,
 			(void **)cacheP, start_block, io_blocks);
 	pthread_rwlock_unlock(&nvmed->cache_radix_lock);
-	
+
 	TAILQ_INIT(&temp_head);
 	/* 检查cacheP数组中的cache,统计有多少cache在[start_blocks,end_block]范围内 */
 	if(find_blocks > 0) {
@@ -2071,8 +2112,9 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 
 			/* 其他地方使用了cache,等待lock释放 */
 			if(found_from_cache)
-				while(FLAG_ISSET_SYNC(cache, CACHE_LOCKED)) usleep(1);
-			
+				while(FLAG_ISSET_SYNC(cache, CACHE_LOCKED))
+					usleep(1);
+
 			if(cache_idx==0) {
 				cache_offs = start_lba % PAGE_SIZE;
 				if(cache_offs + len <= PAGE_SIZE) {
@@ -2106,7 +2148,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 				memcpy(cache->ptr, buf, buf_copy_size);
 				buf_offs+= PAGE_SIZE;
 			}
-			
+
 			if(!found_from_cache) {
 				pthread_rwlock_wrlock(&nvmed->cache_radix_lock);
 				/* 新建的cache,根据block index加入radix tree */
@@ -2117,7 +2159,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 				/* 取数组cacheP下一个cache entry */
 				cache_idx++;
 			}
-		
+
 			pthread_spin_lock(&nvmed->cache_list_lock);
 
 			/* 将cache entry插入lru尾部 */
@@ -2213,15 +2255,15 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 ssize_t nvmed_pread(NVMED_HANDLE* nvmed_handle, void* buf, size_t count, off_t offset) {
 	ssize_t ret;
 	//fprintf(stderr, "%s: %lu %lu\n", __func__, offset, count);
-	ret = nvmed_handle->read_func(nvmed_handle, nvme_cmd_read, 
+	ret = nvmed_handle->read_func(nvmed_handle, nvme_cmd_read,
 			buf, offset, count, NVMED_TRUE, NULL);
 	return ret;
 }
 
 ssize_t nvmed_read(NVMED_HANDLE* nvmed_handle, void* buf, size_t count) {
 	ssize_t ret;
-	
-	ret = nvmed_handle->read_func(nvmed_handle, nvme_cmd_read, 
+
+	ret = nvmed_handle->read_func(nvmed_handle, nvme_cmd_read,
 			buf, nvmed_handle->offset, count, NVMED_FALSE, NULL);
 
 	return ret;
@@ -2231,7 +2273,7 @@ ssize_t nvmed_read(NVMED_HANDLE* nvmed_handle, void* buf, size_t count) {
 ssize_t nvmed_pwrite(NVMED_HANDLE* nvmed_handle, void* buf, size_t count, off_t offset) {
 	ssize_t ret;
 	//fprintf(stderr, "%s: %lu %lu\n", __func__, offset, count);
-	ret = nvmed_handle->write_func(nvmed_handle, nvme_cmd_write, 
+	ret = nvmed_handle->write_func(nvmed_handle, nvme_cmd_write,
 			buf, offset, count, NVMED_TRUE, NULL);
 
 	return ret;
@@ -2239,13 +2281,14 @@ ssize_t nvmed_pwrite(NVMED_HANDLE* nvmed_handle, void* buf, size_t count, off_t 
 
 ssize_t nvmed_write(NVMED_HANDLE* nvmed_handle, void* buf, size_t count) {
 	ssize_t ret;
-	
-	ret = nvmed_handle->write_func(nvmed_handle, nvme_cmd_write, 
+
+	ret = nvmed_handle->write_func(nvmed_handle, nvme_cmd_write,
 			buf, nvmed_handle->offset, count, NVMED_FALSE, NULL);
 
 	return ret;
 }
 
+/* 冲刷cache */
 void nvmed_flush_handle(NVMED_HANDLE* nvmed_handle) {
 	pthread_spin_lock(&nvmed_handle->io_head_lock);
 		if(!TAILQ_EMPTY(&nvmed_handle->io_head)) {
@@ -2260,9 +2303,11 @@ void nvmed_flush(NVMED_HANDLE* __nvmed_handle) {
 	NVMED_HANDLE* nvmed_handle;
 
 	pthread_spin_lock(&nvmed->mngt_lock);
+	/* flush一个nvmed上所有的queue */
 	for (nvmed_queue = nvmed->queue_head.lh_first;
 			nvmed_queue != NULL; nvmed_queue = nvmed_queue->queue_list.le_next) {
 		// handle writeback
+		/* flush一个queue上的所有handle */
 		for (nvmed_handle = nvmed_queue->handle_head.lh_first;
 				nvmed_handle != NULL; nvmed_handle = nvmed_handle->handle_list.le_next) {
 			nvmed_flush_handle(nvmed_handle);
@@ -2271,31 +2316,35 @@ void nvmed_flush(NVMED_HANDLE* __nvmed_handle) {
 	pthread_spin_unlock(&nvmed->mngt_lock);
 
 	//nvmed_flush_handle(nvmed_handle);
-	
+
 	nvmed_handle = __nvmed_handle;
-	if(HtoD(nvmed_handle)->dev_info->vwc != 0) 
+	/* 执行nvme flush命令 */
+	if(HtoD(nvmed_handle)->dev_info->vwc != 0)
 		nvmed_io(nvmed_handle, nvme_cmd_flush, 0, 0, 0, NULL, 0, 0, HANDLE_SYNC_IO, NULL);
-	
+
 }
 
+/* discard命令 */
 int nvmed_discard(NVMED_HANDLE* nvmed_handle, unsigned long start, unsigned int len) {
 	struct nvme_dsm_range *range;
 	u64 __prp;
 
 	if(start % 512 || len % 512) return -NVMED_FAULT;
-	
+
+	/* 获取一个prp page */
 	range = nvmed_handle_get_prp(nvmed_handle, &__prp);
 
 	range->cattr = 0;
 	range->nlb = len >> nvmed_handle->queue->nvmed->dev_info->lba_shift;
 	range->slba = start;
 
+	/* trim */
 	nvmed_io(nvmed_handle, nvme_cmd_dsm, __prp, 0, 0, NULL, start, len, HANDLE_SYNC_IO, NULL);
 
 	return 0;
 }
 
-/* 
+/*
  * (for nvmed_admin tools) Set NVMeDirect Queue Permission
  */
 int nvmed_set_user_quota(NVMED* nvmed, uid_t uid, unsigned int num_queue,
@@ -2315,7 +2364,7 @@ int nvmed_set_user_quota(NVMED* nvmed, uid_t uid, unsigned int num_queue,
 	return NVMED_SUCCESS;
 }
 
-/* 
+/*
  * (for nvmed_admin tools) Get NVMeDirect Queue Permission
  */
 int nvmed_get_user_quota(NVMED* nvmed, uid_t uid,

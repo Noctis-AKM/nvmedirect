@@ -56,6 +56,7 @@ struct nvme_rw_command {
 	__u8			opcode;
 	__u8			flags;
 	__u16			command_id;
+	/* namespace id */
 	__le32			nsid;
 	__u64			rsvd2;
 	__le64			metadata;
@@ -131,6 +132,7 @@ struct nvme_completion {
 	__u32	rsvd;
 	__le16	sq_head;	/* how much of this queue may be reclaimed */
 	__le16	sq_id;		/* submission queue that generated this entry */
+	/* sq指定的command_id,标记是哪个io */
 	__u16	command_id;	/* of the command which completed */
 	__le16	status;		/* did the command fail, and if so, why? */
 };
@@ -148,14 +150,19 @@ struct nvme_command {
 };
 
 enum {
+	/* 预计是读操作 */
 	NVME_DSMGMT_IDR		= 1 << 0,
+	/* 预计是写操作 */
 	NVME_DSMGMT_IDW		= 1 << 1,
+	/* deallocate也就是trim */
 	NVME_DSMGMT_AD		= 1 << 2,
 };
 
 struct nvme_dsm_range {
 	__le32			cattr;
+	/* lba个数 */
 	__le32			nlb;
+	/* start LBA */
 	__le64			slba;
 };
 

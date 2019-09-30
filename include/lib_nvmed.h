@@ -91,16 +91,17 @@ enum {
 
 	QUEUE_NUM_FLAGS			= 2
 };
+/* 中断开启的queue,自己有独立的中断监控线程处理cqe */
 #define QUEUE_MANUAL_CQ (QUEUE_MANUAL_COMPLETION | QUEUE_INTERRUPT)
 
 //FLAGS For NVMED_HANDLE
 enum {
 	HANDLE_DIRECT_IO		= 1 << 0,
-	/* 不能在io_head上积攒cache entry批量写入 */
+	/* 写完一个cmnd,需要等到io返回.不能在io_head上积攒cache entry批量写入 */
 	HANDLE_SYNC_IO			= 1 << 1,
-
+	/* 从nvmed_get_buffer中获取nvme_buf */
 	HANDLE_HINT_DMEM 		= 1 << 2,
-	
+	/* 一个handle对应多个queue */
 	HANDLE_MQ				= 1 << 3,
 
 	HANDLE_INTERRUPT		= 1 << 4,
@@ -112,6 +113,7 @@ enum {
 enum {
 	TD_STATUS_RUNNING		= 1 << 0,
 	TD_STATUS_REQ_STOP		= 1 << 1,
+	/* 初始化时cq thread状态是TD_STATUS_STOP的 */
 	TD_STATUS_STOP			= 1 << 2,
 	TD_STATUS_REQ_SUSPEND	= 1 << 3,
 	TD_STATUS_SUSPEND		= 1 << 4,
@@ -134,7 +136,9 @@ enum {
 
 //STATUS FOR IOD
 enum {
+	/* 发起io */
 	IO_INIT					= 1 << 0,
+	/* iod已经完成,所有资源都已经释放 */
 	IO_COMPLETE				= 1	<< 1,
 	IO_ERROR				= 1 << 2,
 
@@ -143,8 +147,11 @@ enum {
 
 //STATUS FOR IOD INTERRUPT
 enum {
+	/* 不使用中断 */
 	IOD_INTR_INACTIVE		= 0,
+	/* 使用中断 */
 	IOD_INTR_INIT			= 1 << 0,
+	/* 等待中断 */
 	IOD_INTR_WAITING		= 1 << 1,
 	IOD_INTR_COMPLETE		= 1 << 2,
 
@@ -259,6 +266,7 @@ typedef struct nvmed_handle {
 	off_t	offset;
 	off_t bufOffs;
 
+	/* 对应的queue的个数 */
 	int num_mq;
 	NVMED_QUEUE* (*mq_get_queue)(struct nvmed_handle*, u8, 
 			unsigned long, unsigned int);
@@ -335,11 +343,14 @@ typedef struct nvmed_cache_slot {
 } NVMED_CACHE_SLOT;
 
 typedef struct nvmed_iod {
+	/* 所属queue的sq tail */
 	u16 sq_id;
 
 	NVMED_HANDLE* nvmed_handle;
 
+	/* prp page的虚拟地址 */
 	void* prp_addr;
+	/* prp page的物理地址 */
 	u64 prp_pa;
 
 	unsigned int status;
