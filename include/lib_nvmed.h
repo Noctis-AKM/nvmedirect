@@ -8,12 +8,12 @@
  * modify it under the terms of the GNU General Public License
  * as published by the Free Software Foundation; either version 2
  * of the License, or (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
@@ -38,7 +38,7 @@ extern "C" {
 #define NVMED_BUF_MAGIC	0x4E564DED		//NVM'ED'
 #define NVMED_NUM_PREALLOC_PRP	64
 #define NVMED_CACHE_FORCE_EVICT_MAX	4
-/* 4MB个page */
+/* 4MB个page.共16GB的cache */
 #define NVMED_CACHE_INIT_NUM_PAGES	(256*1024*16)	// 256 -> 1MB
 
 #define COMPILER_BARRIER() asm volatile("" ::: "memory")
@@ -68,6 +68,10 @@ typedef enum {
 
 #define INC_SYNC(obj)	__sync_add_and_fetch(&obj, 1);
 #define DEC_SYNC(obj)	__sync_sub_and_fetch(&obj, 1);
+/*
+ * type __sync_and_and_fetch (type *ptr, type value, ...)
+ * 将*ptr与value相与，结果更新到*ptr，并返回操作之后新*ptr的值
+*/
 #define INIT_SYNC(obj)	__sync_and_and_fetch(&obj, 0);
 
 typedef __u64 u64;
@@ -123,12 +127,28 @@ enum {
 
 //FLAGS For NVMED_CACHE
 enum {
+	/* 为了支持lazy_init. lazy init的cache在从freelist上取出cache的时候才做内存映射 */
 	CACHE_UNINIT			= 0,
+	/*
+	 * 设置: 在buf write中将cache放入iod的数组中,准备读数据填充cache的时候.
+	 * 		 在buf read调用填充cache的时候,也会lock cache.
+	 * 取消: 在iod完成时会清除lock并且释放所有cache
+	 * 判断: buf write的时候获取block对应的cache,这个时候需要确保cache是没有在io下发流程
+	 */
 	CACHE_LOCKED			= 1 << 0,
+	/* 从freelist上拿下就要去掉这个标志 */
 	CACHE_FREE				= 1 << 1,
+	/* 在LRU上 */
 	CACHE_LRU				= 1 << 2,
+	/*
+	 * 设置: buf write将用户buffer拷贝到cache中设置dirty.
+	 * 取消: 在iod完成时会清除dirty
+	 * 判断: 在从lru上拿cache的时候判断.不能将dirty的cache分配给其他人
+	 */
 	CACHE_DIRTY				= 1 << 3,
+	/* 在读取数据填充cache的时候,以及io完成的时候会设置 */
 	CACHE_UPTODATE			= 1 << 4,
+	/* cache在io_head上经过积攒,需要一次性回写 */
 	CACHE_WRITEBACK			= 1 << 5,
 
 	CACHE_NUM_FLAGS			= 6,
@@ -198,12 +218,20 @@ typedef struct nvmed {
 
 	//LRU TAILQ Order :
 	//	[HEAD] LRu ------------- MRu [TAIL]
+	/*
+	 * free_head上保留还未使用的cache.
+	 * cache命中会将cache插入LRU的尾部.LRU的头部最少使用,会优先替换
+	 */
 	TAILQ_HEAD(cache_list, nvmed_cache) lru_head, free_head;
 	/* 保存slot.每一个slot获取一段内存分给cache entry */
 	LIST_HEAD(slot_list, nvmed_cache_slot) slot_head;
 	pthread_rwlock_t cache_radix_lock;
 	pthread_spinlock_t cache_list_lock;
 
+	/*
+	 * 正在使用的cache.如果一个cache被从lru上取下来分配给其他人,
+	 * 那么cache也需要从radix tree上取下来.之后会重新插入
+	 */
 	struct radix_tree_root cache_root;
 
 	pthread_t process_cq_td;
@@ -263,6 +291,7 @@ typedef struct nvmed_handle {
 	ssize_t (*write_func)(struct nvmed_handle*, u8, 
 			void*, unsigned long, unsigned int, NVMED_BOOL, void*);
 
+	/* 磁盘上的位置,以字节为单位 */
 	off_t	offset;
 	off_t bufOffs;
 
@@ -286,7 +315,7 @@ typedef struct nvmed_handle {
 	int prpBuf_tail;
 
 	unsigned int dispatched_io;
-	/* 正在执行io的队列 */
+	/* 用于积攒io. 128个连续的io才下发. 只要io挂到io_head上就需要设置CACHE_WRITEBACK */
 	TAILQ_HEAD(io_list, nvmed_cache) io_head;
 	/* io_head上entry的数量 */
 	int num_io_head;
@@ -320,17 +349,20 @@ typedef struct nvmed_cache {
 	/* 4k的block index */
 	unsigned int lpaddr;
 	volatile u32 flags;
+	/* 读命中和miss的统计. */
 	u32 ref;
 	/* ptr的物理地址 */
 	u64 paddr;
+	/* 用户buffer数据会拷贝到这里 */
 	void* ptr;
 
 	NVMED_HANDLE* handle;
 
 	/* 用于加入lru */
 	TAILQ_ENTRY(nvmed_cache) cache_list;
-	/* 用于加入temp list */
+	/* 用于加入temp list和io_head */
 	TAILQ_ENTRY(nvmed_cache) io_list;
+	/* 用于加入dirty_list */
 	LIST_ENTRY(nvmed_cache) handle_cache_list;
 } NVMED_CACHE;
 

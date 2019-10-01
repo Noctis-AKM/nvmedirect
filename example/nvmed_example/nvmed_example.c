@@ -47,14 +47,14 @@ int main(int argc, char** argv) {
 		printf("%s: Cannot open the NVMe device %s\n", argv[0], dev_path);
 		return -1;
 	}
-	
+	/* 默认使用轮训的方式创建queue */
 	queue = nvmed_queue_create(nvmed, 0);
 	if(queue == NULL) {
 		printf("Fail to create I/O queue\n");
 		nvmed_close(nvmed);
 		return -1;
 	}
-	
+	/* 同步handle */
 	handle = nvmed_handle_create(queue, HANDLE_SYNC_IO);
 	if(handle == NULL) {
 		printf("Fail to create I/O handle\n");
@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
 		nvmed_close(nvmed);
 		return -1;
 	}
-
+	/* 分配一个buffer */
 	ptr = nvmed_get_buffer(nvmed, 1);
 	memset(ptr, 0x0, 4096);
 

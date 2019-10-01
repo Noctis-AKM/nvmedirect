@@ -122,12 +122,12 @@ int nvmed_cache_alloc(NVMED* nvmed, unsigned int size, NVMED_BOOL lazy_init) {
 		info->ref = 0;
 		if(lazy_init == NVMED_FALSE) {
 			info->paddr = paList[i];
-			/* 初始化过的cache */
+			/* 非lazy_init的cache.在建立cache的时候已经做了地址映射 */
 			FLAG_SET(info, CACHE_FREE);
 		}
 		else {
 			info->paddr = 0;
-			/* 未初始化过的cache */
+			/* lazy_init的cache,从freelist上取出cache的时候再做映射.设置CACHE_UNINIT */
 			FLAG_SET(info, CACHE_UNINIT | CACHE_FREE);
 		}
 		/* cache的虚拟地址 */
@@ -924,7 +924,7 @@ NVMED* nvmed_open(char* path, int flags) {
 
 		// CACHE - INIT
 		LIST_INIT(&nvmed->slot_head);
-		/* 每次申请256 * 100个cache */
+		/* 每次作为一个slot,申请256 * 100个cache,共100MB一次 */
 		for(idx=0; idx<=num_cache; idx+=(256 * 100))
 			nvmed_cache_alloc(nvmed, idx,
 				__FLAG_ISSET(flags, NVMED_CACHE_LAZY_INIT));
@@ -1178,7 +1178,7 @@ unsigned int __evict_handle_dirty_page(NVMED_HANDLE* handle) {
 	nvmed_cache_io_rw(handle, nvme_cmd_write, \
 			handle->io_head.tqh_first, \
 			io_start_lba * PAGE_SIZE, io_len * PAGE_SIZE, handle->flags | HANDLE_SYNC_IO);
-	/* 清空io_head上的cache */
+	/* 清空io_head上的cache.在io完成以后会清除dirty标志 */
 	while (handle->io_head.tqh_first != NULL)
 		TAILQ_REMOVE(&handle->io_head, handle->io_head.tqh_first, io_list);
 
@@ -1201,9 +1201,9 @@ NVMED_CACHE* nvmed_get_cache(NVMED_HANDLE* nvmed_handle) {
 	pthread_spin_lock(&nvmed->cache_list_lock);
 
 restart:
-	/* 如果free_head上没有cache,就从lru上拿 */
 	cache = nvmed->free_head.tqh_first;
 	if(cache==NULL)  {
+		/* 如果free_head上没有cache,就从lru头部上拿 */
 		//HEAD -> LRU, //TAIL -> MRU
 		//EVICT - LRU
 		cache = nvmed->lru_head.tqh_first;
@@ -1218,6 +1218,7 @@ restart:
 			//////////// handle io_list evict!!
 			TAILQ_INIT(&temp_head);
 
+			/* 如果lru head上取出的cache有被锁或者读操作命中率较高,那么就sleep,重新扫描 */
 			while(FLAG_ISSET_SYNC(cache, CACHE_LOCKED) || cache->ref != 0) {
 				pthread_spin_unlock(&nvmed->cache_list_lock);
 				pthread_rwlock_unlock(&nvmed->cache_radix_lock);
@@ -1239,7 +1240,10 @@ restart:
 				goto restart;
 			}
 
-			/* 将脏cache全部写入设备 */
+			/*
+			 * 将脏cache全部写入设备.io_head上所有的io在完成后会清除dirty标志.
+			 * 之后在lru上就能获取到可用的cache了.
+			 */
 			__evict_handle_dirty_page(handle);
 
 			pthread_spin_unlock(&handle->io_head_lock);
@@ -1251,9 +1255,11 @@ restart:
 		}
 	} else {
 		// Remove From Free Queue
+		/* 从freelist上取出这个free的cache */
 		TAILQ_REMOVE(&nvmed->free_head, cache, cache_list);
 		FLAG_UNSET_SYNC(cache, CACHE_FREE);
 		if(FLAG_ISSET(cache, CACHE_UNINIT)) {
+			/* lazy init的cache在从freelist上取出cache的时候才做内存映射 */
 			memset(cache->ptr, 0, PAGE_SIZE);
 			virt_to_phys(nvmed, cache->ptr, &cache->paddr, 4096);
 			FLAG_UNSET_SYNC(cache, CACHE_UNINIT);
@@ -1261,6 +1267,7 @@ restart:
 		ret_cache = cache;
 	}
 
+	/* 初始化为0 */
 	INIT_SYNC(ret_cache->ref);
 	pthread_spin_unlock(&nvmed->cache_list_lock);
 	pthread_rwlock_unlock(&nvmed->cache_radix_lock);
@@ -1443,6 +1450,7 @@ int make_prp_list_from_cache(NVMED_HANDLE* nvmed_handle, NVMED_CACHE *__cache,
 	*prp2_addr = NULL;
 
 	cache = __cache;
+	/* cache在分配的时候就已经确定了ptr的物理内存地址 */
 	__prp1 = cache->paddr;
 	if(num_list == 2) {
 		cache = cache->io_list.tqe_next;
@@ -1520,7 +1528,7 @@ ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__
 	cache = __cache;
 
 	num_cache = len / PAGE_SIZE;
-	/* 锁住所有的cache */
+	/* 锁住所有要下发的cache */
 	while(num_cache-- > 0) {
 		FLAG_SET_SYNC(cache, CACHE_LOCKED);
 		cache = cache->io_list.tqe_next;
@@ -1547,7 +1555,7 @@ ssize_t nvmed_cache_io_rw(NVMED_HANDLE* nvmed_handle, u8 opcode, NVMED_CACHE *__
 		total_io += io;
 		io_lba += io;
 
-		/* 选择下一个cache */
+		/* 跳过num_cache个cache */
 		while(num_cache-- > 0)
 			cache = cache->io_list.tqe_next;
 	}
@@ -1801,7 +1809,7 @@ ssize_t nvmed_buffer_read(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			cache = nvmed_get_cache(nvmed_handle);
 			TAILQ_INSERT_TAIL(&temp_head, cache, io_list);
 		}
-		/* 采用同步io读取设备,填充temp_head */
+		/* 采用同步io读取设备,填充所有在temp_head上的cache */
 		nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, temp_head.tqh_first,
 				start_block * PAGE_SIZE, io_blocks * PAGE_SIZE, HANDLE_SYNC_IO);
 
@@ -2025,7 +2033,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		if(cache->lpaddr > end_block)
 			find_blocks = 0;
 		else {
-			final_num_blocks = 0;
+			final_num_blocks= 0;
 			for(i=0; i<find_blocks; i++) {
 				cache = *(cacheP + i);
 				if(cache->lpaddr >= start_block && end_block <= cache->lpaddr)
@@ -2101,6 +2109,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 			found_from_cache = NVMED_FALSE;
 			if(cache != NULL &&cache->lpaddr == block_idx) {
 				found_from_cache = NVMED_TRUE;
+				/* cache命中,将cache从lru上移除,之后会重新插入lru尾部 */
 				TAILQ_REMOVE(&nvmed->lru_head, cache, cache_list);
 			}
 			else {
@@ -2124,7 +2133,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 					buf_copy_size = PAGE_SIZE - cache_offs;
 				}
 
-				/* 如果这个cache未命中,那么就需要先读取设备,填充cache entry */
+				/* 如果这个cache未命中,又不是完全覆盖写，那么就需要先读取设备,填充cache entry */
 				if(!found_from_cache && buf_copy_size != PAGE_SIZE) {
 					nvmed_cache_io_rw(nvmed_handle, nvme_cmd_read, cache, \
 						cache->lpaddr * PAGE_SIZE, PAGE_SIZE, HANDLE_SYNC_IO);
@@ -2185,7 +2194,10 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 	}
 
 	// IO MERGE AND EXEC
-	/* handle没有设置HANDLE_SYNC_IO的时候才能进行cache io */
+	/*
+	 * handle没有设置HANDLE_SYNC_IO的时候才能积攒cache批量下发io.
+	 * 将temp_head上的io按照lpaddr排序加入handle的io_head
+	 */
 	if(!FLAG_ISSET(nvmed_handle, HANDLE_SYNC_IO)) {
 		pthread_spin_lock(&nvmed_handle->io_head_lock);
 		/* 加入temp_head的cache要开始执行io */
@@ -2233,7 +2245,7 @@ ssize_t nvmed_buffer_write(NVMED_HANDLE* nvmed_handle, u8 opcode, void* buf,
 		pthread_spin_unlock(&nvmed_handle->io_head_lock);
 	}
 	else {
-		/* handle设置了HANDLE_SYNC_IO,无法使用积攒cache,必须要直接写入 */
+		/* handle设置了HANDLE_SYNC_IO,无法排序cache.也无法统一回刷handle->io_head */
 		nvmed_cache_io_rw(nvmed_handle, nvme_cmd_write, temp_head.tqh_first, \
 			start_block * PAGE_SIZE, io_blocks * PAGE_SIZE, nvmed_handle->flags);
 	}

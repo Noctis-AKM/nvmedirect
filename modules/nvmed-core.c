@@ -383,7 +383,7 @@ static int nvmed_get_buffer_addr(NVMED_NS_ENTRY *ns_entry, NVMED_BUF* __user *__
 		}
 
 		pud = pud_offset(pgd, vaddr);
-		if(pud_none(*pud) || pud_bad(*pud)) {
+		if(pud_none(*pud) || pud_bad(	*pud)) {
 			ret_val = -EFAULT;
 			break;
 		}
