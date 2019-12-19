@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
 		nvmed_close(nvmed);
 		return -1;
 	}
-	/* 分配一个buffer */
+	/* 分配一个buffer,同时也填充物理地址 */
 	ptr = nvmed_get_buffer(nvmed, 1);
 	memset(ptr, 0x0, 4096);
 

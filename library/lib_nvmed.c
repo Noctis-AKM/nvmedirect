@@ -166,6 +166,7 @@ void* nvmed_handle_get_prp(NVMED_HANDLE* nvmed_handle, u64* pa) {
 			/* 如果到了尾部,head需要重新设置成0 */
 			if(++head == nvmed_handle->prpBuf_size) head = 0;
 			nvmed_handle->prpBuf_head = head;
+			/* 可用的prp page减少 */
 			nvmed_handle->prpBuf_curr--;
 			pthread_spin_unlock(&nvmed_handle->prpBuf_lock);
 			break;
@@ -608,7 +609,7 @@ void* nvmed_process_cq_intr(void *data) {
 		ret = ioctl(nvmed->ns_fd, NVMED_IOCTL_INTERRUPT_COMM, &qid);
 		if(ret < 0) break;
 
-		/* 发现收到中断 */
+		/* 发现收到中断,这里qid从内核获取的是中断次数 */
 		if(qid != 0) {
 			nvmed_queue_complete(nvmed_queue);
 		}
@@ -686,6 +687,7 @@ NVMED_QUEUE* nvmed_queue_create(NVMED* nvmed, int flags) {
 	/* phase初始化为1,因为controller在第一轮写cq phase是1. */
 	nvmed_queue->cq_phase = 1;
 
+	/* 提前分配，用来记录每一个io的状态 */
 	nvmed_queue->iod_arr = calloc(nvmed->dev_info->q_depth, sizeof(NVMED_IOD));
 	nvmed_queue->iod_pos = 0;
 
@@ -905,7 +907,6 @@ NVMED* nvmed_open(char* path, int flags) {
 
 	pthread_cond_init(&nvmed->process_cq_cond, NULL);
 	pthread_mutex_init(&nvmed->process_cq_mutex, NULL);
-	//pthread_create(&nvmed->process_cq_td, NULL, &nvmed_process_cq, (void*)nvmed);
 
 	if(!__FLAG_ISSET(flags, NVMED_NO_CACHE)) {
 		// CACHE
@@ -1043,6 +1044,7 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 
 	pthread_spin_lock(&nvmed_queue->sq_lock);
 
+	/* 获取不到iod就一直循环 */
 	while(1) {
 		target_id = nvmed_queue->iod_pos++;
 		iod = nvmed_queue->iod_arr + target_id;
@@ -1075,6 +1077,7 @@ ssize_t nvmed_io(NVMED_HANDLE* nvmed_handle, u8 opcode,
 		iod->intr_status = IOD_INTR_INACTIVE;
 	}
 
+	/* 将cache关联到iod,用于在io结束的时候更新cache状态 */
 	if(__cache != NULL) {
 		pthread_spin_lock(&nvmed_queue->iod_arr_lock);
 		/* cache的个数 */
@@ -1200,6 +1203,7 @@ NVMED_CACHE* nvmed_get_cache(NVMED_HANDLE* nvmed_handle) {
 	pthread_rwlock_wrlock(&nvmed->cache_radix_lock);
 	pthread_spin_lock(&nvmed->cache_list_lock);
 
+/* 获取不到cache, 就会一直goto restart */
 restart:
 	cache = nvmed->free_head.tqh_first;
 	if(cache==NULL)  {

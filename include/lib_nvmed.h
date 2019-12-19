@@ -188,8 +188,11 @@ enum {
 };
 
 enum {
+	/* aio enqueue */
 	AIO_INIT				= 0,
+	/* io准备提交到nvme sq */
 	AIO_PROCESS			 	= 1 << 1,
+	/* io完成 */
 	AIO_COMPLETE			= 1 << 2,
 	
 	AIO_NUM_FLAGS			= 3,
@@ -267,6 +270,7 @@ typedef struct nvmed_queue {
 	u8	cq_phase, cqe_seen;
 
 	struct nvmed_iod* iod_arr;
+	/* 指向iod_arr中的一个iod */
 	unsigned int	  iod_pos;
 	pthread_spinlock_t iod_arr_lock;
 
@@ -336,7 +340,9 @@ typedef struct nvmed_aio_ctx {
 
 	u8 opcode;
 	volatile int status;
+	/* context中发送io的个数 */
 	int num_init_io;
+	/* 完成io的个数 */
 	int num_complete_io;
 	
 	void* private_data;
@@ -374,6 +380,7 @@ typedef struct nvmed_cache_slot {
 	LIST_ENTRY(nvmed_cache_slot) slot_list;
 } NVMED_CACHE_SLOT;
 
+/* 不论大小，提交一次nvme cmd就算一个io */
 typedef struct nvmed_iod {
 	/* 所属queue的sq tail */
 	u16 sq_id;

@@ -55,6 +55,7 @@ typedef enum {
 } NVMED_RESULT;
 
 typedef struct nvmed_buf {
+	/* 用于buffer的虚拟地址 */
 	void* addr;
 	/* 有多少个page */
 	unsigned int size;

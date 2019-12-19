@@ -56,9 +56,13 @@ typedef struct {
 	NVMED_QUEUE*	queue;
 	NVMED_HANDLE*	handle;
 
+	/* 完成的io_u* 数组 */
     struct io_u**           iocq;   // io completion queue
+	/* event用来记录每一个io的状态 */
     int                     head;   // head of the io completion queue
+	/* 只要有io完成,getevent就增加tail */
     int                     tail;   // tail of the io completion queue
+	/* 完成io的个数 */
     int                     cbc;    // completion callback count
 } nvmed_io_thread_t;
 
@@ -107,6 +111,7 @@ static int fio_nvmed_init(struct thread_data *td)
 		return 1;
 	}
 
+	/* 每一个fio的thread的private data绑定一个nvmed handle */
 	td->io_ops_data = nvmed_io_handle;
 
 	return 0;
@@ -148,12 +153,14 @@ static void fio_nvmed_cleanup(struct thread_data *td)
  * the ->event() hook must return the 3 events that have completed for
  * subsequent calls to ->event() with [0-2]. Required.
  */
+/* 每个io的处理状态. */
 static struct io_u* fio_nvmed_event(struct thread_data *td, int event)
 {
 	FUNC_DEBUG();
     nvmed_io_thread_t* nvmed_io_handle = td->io_ops_data;
     struct io_u* io_u = NULL;
 
+	/* 每个io状态查询完毕,就移动head */
     if (nvmed_io_handle->head != nvmed_io_handle->tail) {
         io_u = nvmed_io_handle->iocq[nvmed_io_handle->head];
         if (++nvmed_io_handle->head > td->o.iodepth) nvmed_io_handle->head = 0;
@@ -166,6 +173,7 @@ static struct io_u* fio_nvmed_event(struct thread_data *td, int event)
 /*
  * Completion callback function.
  */
+/* nvmed_aio_handle_complete会调用 */
 static void nvmed_completion_cb(const NVMED_AIO_CTX* context, void* data)
 {
 	FUNC_DEBUG();
@@ -175,6 +183,7 @@ static void nvmed_completion_cb(const NVMED_AIO_CTX* context, void* data)
 
 	nvmed_io_handle->iocq[nvmed_io_handle->tail] = io_u;
 	if(++nvmed_io_handle->tail > nvmed_iou->td->o.iodepth) nvmed_io_handle->tail = 0;
+	/* io一旦完成,就会增加计数*/
 	nvmed_io_handle->cbc++;
 }
 
@@ -199,11 +208,13 @@ static int fio_nvmed_getevents(struct thread_data *td, unsigned int min,
     }
 
     for (;;) {
+		/* 处理一个queue上所有的cq */
 		nvmed_aio_handle_complete(nvmed_io_handle->handle);
 
         // wait for completion
         while (nvmed_io_handle->cbc) {
             nvmed_io_handle->cbc--;
+			/* reaper至少min个io才返回 */
             events++;
             TDEBUG("events=%d cbc=%d", events, nvmed_io_handle->cbc);
             if (events >= min) return events;
@@ -229,10 +240,12 @@ static int fio_nvmed_prep_aio(struct thread_data *td, struct io_u *io_u)
 {
 	FUNC_DEBUG();
 	nvmed_io_thread_t *nvmed_io_handle = td->io_ops_data;
+	/* nvmed io中包含buffer */
 	nvmed_io_u_t *nvmed_iou = io_u->engine_data;
 	NVMED_AIO_CTX *context = &nvmed_iou->context;
 
 	context->handle = nvmed_io_handle->handle;
+	/* fio io中获取读写位置 */
 	context->start_lba = io_u->offset;
 	context->len = io_u->xfer_buflen;
 	context->buf = nvmed_iou->buf;
@@ -310,8 +323,10 @@ static int fio_nvmed_io_u_init(struct thread_data *td, struct io_u *io_u)
 	unsigned int num_pages;
 	if(!nvmed_iou) return 1;
 
+	/* 一个io最大的长度 */
 	maxlen = td_max_bs(td);
 	num_pages = maxlen / PAGE_SIZE;
+	/* 提前mlock一个buffer,同时也填充物理地址 */
 	nvmed_iou->buf = nvmed_get_buffer(nvmed.nvmed, num_pages);
 
 	if(!nvmed_iou->buf) {
@@ -321,6 +336,7 @@ static int fio_nvmed_io_u_init(struct thread_data *td, struct io_u *io_u)
 
 	nvmed_iou->td = td;
 	nvmed_iou->io_u = io_u;
+	/* fio的io携带nvmed io. nvmed作为engine, */
 	io_u->engine_data = nvmed_iou;
 
     return 0;
